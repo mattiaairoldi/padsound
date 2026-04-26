@@ -1,17 +1,26 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 
-use crate::command::Command;
+use crate::command::{Command, TrackRuntimeUpdate};
 use crate::config::Config;
 use crate::terminal;
 
 use super::decoder::decode_file;
 use super::mixer::{Mixer, RuntimeTrackState};
 use super::track::LoadedTrack;
+
+#[derive(Debug, Clone)]
+struct CachedAudio {
+    samples: Arc<[f32]>,
+    channels: usize,
+    sample_rate: u32,
+    frame_count: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioEngineInfo {
@@ -26,6 +35,8 @@ pub struct TrackInfo {
     pub id: String,
     pub name: String,
     pub duration_seconds: f64,
+    pub frame_count: usize,
+    pub sample_rate: u32,
 }
 
 pub struct AudioEngine {
@@ -59,6 +70,8 @@ impl AudioEngine {
                 id: track.id.clone(),
                 name: track.name.clone(),
                 duration_seconds: track.duration_seconds(),
+                frame_count: track.frame_count,
+                sample_rate: track.sample_rate,
             })
             .collect();
 
@@ -108,14 +121,27 @@ fn load_tracks(
     channels: usize,
 ) -> Result<Vec<LoadedTrack>> {
     let mut tracks = Vec::with_capacity(config.tracks.len());
+    let mut audio_cache = HashMap::<PathBuf, CachedAudio>::new();
 
     for track in &config.tracks {
         let path = track.resolved_file(base_dir);
-        let decoded = decode_file(&path)
-            .with_context(|| format!("error loading track {}", track.id))?
-            .into_output_format(sample_rate, channels)?;
+        let decoded = if let Some(decoded) = audio_cache.get(&path) {
+            decoded.clone()
+        } else {
+            let decoded = decode_file(&path)
+                .with_context(|| format!("error loading track {}", track.id))?
+                .into_output_format(sample_rate, channels)?;
+            let decoded = CachedAudio {
+                frame_count: decoded.frame_count(),
+                channels: decoded.channels,
+                sample_rate: decoded.sample_rate,
+                samples: decoded.samples.into(),
+            };
+            audio_cache.insert(path.clone(), decoded.clone());
+            decoded
+        };
 
-        let frame_count = decoded.frame_count();
+        let frame_count = decoded.frame_count;
         let start_frame = seconds_to_frame(track.start_at, sample_rate).min(frame_count);
         let stop_before_frames = seconds_to_frame(track.stop_before_end, sample_rate);
         let end_frame = frame_count.saturating_sub(stop_before_frames);
@@ -132,13 +158,16 @@ fn load_tracks(
         tracks.push(LoadedTrack {
             id: track.id.clone(),
             name: track.name.clone(),
-            samples: decoded.samples.into(),
+            samples: decoded.samples,
             channels: decoded.channels,
             sample_rate: decoded.sample_rate,
+            frame_count,
             start_frame,
             end_frame,
             mode: track.mode,
             looping: track.looping,
+            fade_in: track.fade_in,
+            fade_out: track.fade_out,
             default_volume: track.volume,
         });
     }
@@ -148,6 +177,29 @@ fn load_tracks(
 
 fn seconds_to_frame(seconds: f64, sample_rate: u32) -> usize {
     (seconds * sample_rate as f64).round().max(0.0) as usize
+}
+
+pub fn runtime_update_for_track(
+    track: &crate::config::TrackConfig,
+    frame_count: usize,
+    sample_rate: u32,
+) -> Option<TrackRuntimeUpdate> {
+    let start_frame = seconds_to_frame(track.start_at, sample_rate).min(frame_count);
+    let stop_before_frames = seconds_to_frame(track.stop_before_end, sample_rate);
+    let end_frame = frame_count.saturating_sub(stop_before_frames);
+    if start_frame >= end_frame {
+        return None;
+    }
+
+    Some(TrackRuntimeUpdate {
+        mode: track.mode,
+        looping: track.looping,
+        start_frame,
+        end_frame,
+        fade_in: track.fade_in,
+        fade_out: track.fade_out,
+        default_volume: track.volume,
+    })
 }
 
 fn build_stream(

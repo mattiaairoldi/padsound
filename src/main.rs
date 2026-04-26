@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ use padsound::audio::mixer::RuntimeTrackState;
 use padsound::config::Config;
 use padsound::input::midi;
 use padsound::state::AppState;
+use padsound::state::TrackRuntimeSpec;
 use padsound::ui::{self, tui};
 
 #[derive(Debug, Parser)]
@@ -123,12 +125,27 @@ async fn main() -> Result<()> {
     let command_tx = engine.sender();
     let runtime_state: Arc<Mutex<Vec<RuntimeTrackState>>> =
         Arc::new(Mutex::new(engine.runtime_state()));
+    let track_specs = engine
+        .info()
+        .tracks
+        .iter()
+        .map(|track| {
+            (
+                track.id.clone(),
+                TrackRuntimeSpec {
+                    frame_count: track.frame_count,
+                    sample_rate: track.sample_rate,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let app_state = AppState::new(
         config.clone(),
         args.config.clone(),
         base_dir.clone(),
         command_tx.clone(),
         runtime_state.clone(),
+        track_specs,
     );
     let info = engine.info();
     println!(
@@ -166,7 +183,7 @@ async fn main() -> Result<()> {
         padsound::input::keyboard::run(&config, command_tx)?;
     } else {
         println!("Opening terminal TUI. Web UI remains active for MIDI learn/config.");
-        tui::run(&config, app_state, command_tx)?;
+        tui::run(app_state, command_tx)?;
     }
 
     Ok(())

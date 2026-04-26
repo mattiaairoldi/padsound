@@ -27,6 +27,10 @@ pub struct TrackConfig {
     pub start_at: f64,
     #[serde(default)]
     pub stop_before_end: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_in: Option<FadeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_out: Option<FadeConfig>,
     #[serde(default = "default_volume")]
     pub volume: f32,
     pub midi_note: Option<u8>,
@@ -38,6 +42,22 @@ pub struct TrackConfig {
 pub enum PlaybackMode {
     Toggle,
     Hold,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
+pub struct FadeConfig {
+    pub seconds: f64,
+    #[serde(default)]
+    pub curve: FadeCurve,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FadeCurve {
+    #[default]
+    Linear,
+    EqualPower,
+    Exponential,
 }
 
 impl Config {
@@ -99,6 +119,16 @@ impl Config {
             }
             if track.stop_before_end < 0.0 {
                 bail!("track {} has a negative stop_before_end", label);
+            }
+            if let Some(fade_in) = track.fade_in
+                && fade_in.seconds < 0.0
+            {
+                bail!("track {} has a negative fade_in duration", label);
+            }
+            if let Some(fade_out) = track.fade_out
+                && fade_out.seconds < 0.0
+            {
+                bail!("track {} has a negative fade_out duration", label);
             }
             if !(0.0..=1.0).contains(&track.volume) {
                 bail!("track {} has volume outside range 0.0-1.0", label);
@@ -207,6 +237,8 @@ impl Config {
                     looping: false,
                     start_at: 0.0,
                     stop_before_end: 0.0,
+                    fade_in: None,
+                    fade_out: None,
                     volume: 1.0,
                     midi_note: None,
                     midi_volume_cc: None,
@@ -400,6 +432,8 @@ mod tests {
                 midi_note = 37
                 mode = "hold"
                 looping = true
+                fade_in = { seconds = 1.0, curve = "linear" }
+                fade_out = { seconds = 2.0, curve = "equal_power" }
                 volume = 0.5
             "#,
         )
@@ -411,6 +445,7 @@ mod tests {
         assert_eq!(config.tracks.len(), 2);
         assert_eq!(config.tracks[0].mode, PlaybackMode::Toggle);
         assert_eq!(config.tracks[1].mode, PlaybackMode::Hold);
+        assert_eq!(config.tracks[1].fade_out.expect("fade out").seconds, 2.0);
     }
 
     #[test]

@@ -54,6 +54,7 @@ If Rust is missing, install it from <https://rustup.rs/>.
 - multi-track mixer;
 - `toggle` and `hold` playback modes;
 - looping;
+- fade in and fade out with selectable curves;
 - start offset and stop-before-end offset;
 - per-track volume;
 - keyboard input;
@@ -133,8 +134,29 @@ From the web UI, MIDI learn can be started for each track:
 - `Trigger`: saves the next received MIDI note to `midi_note`;
 - `Volume`: saves the next received MIDI control change to `midi_volume_cc`.
 
+The web UI can also edit common track fields after a configuration has been
+generated: name, key, mode, loop, offsets, fade settings, volume, and MIDI
+mappings. Changing the audio file path itself still requires editing the TOML
+file and restarting Padsound.
+
 The configuration file is saved back as TOML. The recommended extension is
 `.padsound.toml`, for example `show.padsound.toml`.
+
+## Configuration Notes
+
+Multiple tracks may point to the same audio file. This is useful for cue
+variants: the same file can have different keyboard/MIDI triggers, offsets,
+volume, loop mode, or fade settings. Padsound decodes shared audio files once at
+startup and reuses the decoded audio in memory for all variants.
+
+Fade settings are optional:
+
+```toml
+fade_in = { seconds = 1.0, curve = "linear" }
+fade_out = { seconds = 2.0, curve = "equal_power" }
+```
+
+Supported fade curves are `linear`, `equal_power`, and `exponential`.
 
 To disable the TUI and use the simpler terminal keyboard loop:
 

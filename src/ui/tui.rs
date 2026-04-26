@@ -26,32 +26,24 @@ struct KeyBinding {
     mode: PlaybackMode,
 }
 
-pub fn run(config: &Config, app_state: AppState, command_tx: Sender<Command>) -> Result<()> {
+pub fn run(app_state: AppState, command_tx: Sender<Command>) -> Result<()> {
     let mut terminal = setup_terminal()?;
-    let bindings = build_bindings(config);
     let mut held_keys = HashSet::new();
-    let result = run_loop(
-        &mut terminal,
-        config,
-        app_state,
-        command_tx,
-        &bindings,
-        &mut held_keys,
-    );
+    let result = run_loop(&mut terminal, app_state, command_tx, &mut held_keys);
     restore_terminal(&mut terminal)?;
     result
 }
 
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    config: &Config,
     app_state: AppState,
     command_tx: Sender<Command>,
-    bindings: &HashMap<String, KeyBinding>,
     held_keys: &mut HashSet<String>,
 ) -> Result<()> {
     loop {
-        draw(terminal, config, &app_state)?;
+        let config = app_state.config();
+        let bindings = build_bindings(&config);
+        draw(terminal, &config, &app_state)?;
 
         if !event::poll(Duration::from_millis(80)).context("error reading keyboard input")? {
             continue;
@@ -77,7 +69,7 @@ fn run_loop(
             continue;
         }
 
-        handle_track_key(key_event, bindings, held_keys, &command_tx)?;
+        handle_track_key(key_event, &bindings, held_keys, &command_tx)?;
     }
 
     Ok(())

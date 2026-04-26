@@ -10,6 +10,8 @@ mode = "toggle"
 looping = false
 start_at = 0.0
 stop_before_end = 0.0
+fade_in = { seconds = 0.03, curve = "linear" }
+fade_out = { seconds = 0.15, curve = "equal_power" }
 volume = 1.0
 midi_note = 36
 midi_volume_cc = 21
@@ -23,6 +25,7 @@ mode = "toggle"
 looping = false
 start_at = 0.0
 stop_before_end = 0.0
+fade_out = { seconds = 0.08, curve = "exponential" }
 volume = 1.0
 midi_note = 37
 midi_volume_cc = 22
@@ -36,6 +39,8 @@ mode = "hold"
 looping = true
 start_at = 0.0
 stop_before_end = 0.0
+fade_in = { seconds = 0.1, curve = "equal_power" }
+fade_out = { seconds = 0.2, curve = "equal_power" }
 volume = 0.7
 midi_note = 38
 midi_volume_cc = 23

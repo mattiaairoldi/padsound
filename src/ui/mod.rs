@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::command::Command;
-use crate::state::{AppState, LearnKind, LearnRequest};
+use crate::config::FadeConfig;
+use crate::state::{AppState, LearnKind, LearnRequest, TrackConfigUpdate};
 use crate::terminal;
 
 pub mod tui;
@@ -29,6 +30,10 @@ struct UiTrack {
     key: Option<String>,
     mode: String,
     looping: bool,
+    start_at: f64,
+    stop_before_end: f64,
+    fade_in: Option<FadeConfig>,
+    fade_out: Option<FadeConfig>,
     volume: f32,
     runtime_volume: f32,
     is_playing: bool,
@@ -63,6 +68,7 @@ pub async fn serve(app_state: AppState, addr: SocketAddr) -> Result<SocketAddr> 
         .route("/api/state", get(api_state))
         .route("/api/learn", post(api_learn))
         .route("/api/command", post(api_command))
+        .route("/api/track", post(api_track))
         .with_state(app_state);
 
     let listener = TcpListener::bind(addr)
@@ -135,6 +141,17 @@ async fn api_command(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn api_track(
+    State(app_state): State<AppState>,
+    Json(request): Json<TrackConfigUpdate>,
+) -> Result<StatusCode, UiError> {
+    app_state
+        .update_track_config(request)
+        .map_err(|error| UiError::bad_request(error.to_string()))?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 fn required_track_id(request: &CommandRequest) -> Result<String, UiError> {
     request
         .track_id
@@ -159,6 +176,10 @@ fn build_ui_state(app_state: &AppState) -> UiState {
                 key: track.key,
                 mode: format!("{:?}", track.mode).to_lowercase(),
                 looping: track.looping,
+                start_at: track.start_at,
+                stop_before_end: track.stop_before_end,
+                fade_in: track.fade_in,
+                fade_out: track.fade_out,
                 volume: track.volume,
                 runtime_volume: runtime
                     .map(|runtime| runtime.volume)
@@ -299,6 +320,36 @@ const INDEX_HTML: &str = r#"<!doctype html>
       gap: 8px;
       flex-wrap: wrap;
     }
+    .edit-row {
+      display: none;
+      background: #141414;
+    }
+    .edit-row.open {
+      display: table-row;
+    }
+    .edit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      padding: 12px 0;
+    }
+    label {
+      display: grid;
+      gap: 4px;
+      color: #bbb;
+      font-size: 12px;
+    }
+    input, select {
+      border: 1px solid #555;
+      border-radius: 6px;
+      background: #202020;
+      color: #eee;
+      padding: 7px 8px;
+      font: inherit;
+    }
+    input[type="checkbox"] {
+      width: fit-content;
+    }
     .toolbar {
       display: flex;
       justify-content: flex-end;
@@ -342,6 +393,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
         <th>MIDI CC</th>
         <th>Play</th>
         <th>Learn</th>
+        <th>Edit</th>
       </tr>
     </thead>
     <tbody id="tracks"></tbody>
@@ -381,14 +433,38 @@ const INDEX_HTML: &str = r#"<!doctype html>
           <td>${track.midi_volume_cc ?? ''}</td>
           <td>
             <div class="actions">
-              <button onclick="sendCommand('toggle', '${track.id}')">Toggle</button>
-              <button onclick="sendCommand('stop', '${track.id}')">Stop</button>
+              <button onclick="sendCommand('toggle', ${jsString(track.id)})">Toggle</button>
+              <button onclick="sendCommand('stop', ${jsString(track.id)})">Stop</button>
             </div>
           </td>
           <td>
             <div class="actions">
-              <button onclick="learn('${track.id}', 'trigger')">Trigger</button>
-              <button onclick="learn('${track.id}', 'volume')">Volume</button>
+              <button onclick="learn(${jsString(track.id)}, 'trigger')">Trigger</button>
+              <button onclick="learn(${jsString(track.id)}, 'volume')">Volume</button>
+            </div>
+          </td>
+          <td><button onclick="toggleEdit(${jsString(track.id)})">Edit</button></td>
+        </tr>
+        <tr class="edit-row" id="edit-${escapeId(track.id)}">
+          <td colspan="11">
+            <div class="edit-grid">
+              ${textInput(track, 'name', 'Name', track.name)}
+              ${textInput(track, 'key', 'Key', track.key ?? '')}
+              ${selectInput(track, 'mode', 'Mode', track.mode, ['toggle', 'hold'])}
+              ${checkboxInput(track, 'looping', 'Loop', track.looping)}
+              ${numberInput(track, 'start_at', 'Start at', track.start_at, 0, 0.01)}
+              ${numberInput(track, 'stop_before_end', 'Stop before end', track.stop_before_end, 0, 0.01)}
+              ${numberInput(track, 'volume', 'Volume', track.volume, 0, 0.01, 1)}
+              ${numberInput(track, 'fade_in_seconds', 'Fade in seconds', track.fade_in?.seconds ?? 0, 0, 0.01)}
+              ${selectInput(track, 'fade_in_curve', 'Fade in curve', track.fade_in?.curve ?? 'linear', ['linear', 'equal_power', 'exponential'])}
+              ${numberInput(track, 'fade_out_seconds', 'Fade out seconds', track.fade_out?.seconds ?? 0, 0, 0.01)}
+              ${selectInput(track, 'fade_out_curve', 'Fade out curve', track.fade_out?.curve ?? 'linear', ['linear', 'equal_power', 'exponential'])}
+              ${numberInput(track, 'midi_note', 'MIDI note', track.midi_note ?? '', 0, 1, 127)}
+              ${numberInput(track, 'midi_volume_cc', 'MIDI CC', track.midi_volume_cc ?? '', 0, 1, 127)}
+            </div>
+            <div class="actions">
+              <button onclick="saveTrack(${jsString(track.id)})">Save</button>
+              <button onclick="toggleEdit(${jsString(track.id)})">Cancel</button>
             </div>
           </td>
         </tr>
@@ -411,6 +487,43 @@ const INDEX_HTML: &str = r#"<!doctype html>
         headers: {'content-type': 'application/json'},
         body: JSON.stringify({action, track_id: trackId})
       });
+    }
+
+    function toggleEdit(trackId) {
+      document.getElementById(`edit-${escapeId(trackId)}`)?.classList.toggle('open');
+    }
+
+    async function saveTrack(trackId) {
+      const track = currentTracks.find(track => track.id === trackId);
+      if (!track) {
+        return;
+      }
+
+      const body = {
+        track_id: trackId,
+        name: field(trackId, 'name').value,
+        key: emptyToNull(field(trackId, 'key').value),
+        mode: field(trackId, 'mode').value,
+        looping: field(trackId, 'looping').checked,
+        start_at: numberValue(trackId, 'start_at'),
+        stop_before_end: numberValue(trackId, 'stop_before_end'),
+        fade_in: fadeValue(trackId, 'fade_in'),
+        fade_out: fadeValue(trackId, 'fade_out'),
+        volume: numberValue(trackId, 'volume'),
+        midi_note: optionalInteger(trackId, 'midi_note'),
+        midi_volume_cc: optionalInteger(trackId, 'midi_volume_cc')
+      };
+
+      const response = await fetch('/api/track', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        alert(await response.text());
+        return;
+      }
+      await loadState();
     }
 
     document.addEventListener('keydown', event => {
@@ -501,6 +614,63 @@ const INDEX_HTML: &str = r#"<!doctype html>
         '"': '&quot;',
         "'": '&#039;'
       }[char]));
+    }
+
+    function escapeId(value) {
+      return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    function jsString(value) {
+      return JSON.stringify(String(value));
+    }
+
+    function field(trackId, name) {
+      return document.getElementById(`${escapeId(trackId)}-${name}`);
+    }
+
+    function emptyToNull(value) {
+      const trimmed = String(value).trim();
+      return trimmed.length ? trimmed : null;
+    }
+
+    function numberValue(trackId, name) {
+      return Number(field(trackId, name).value || 0);
+    }
+
+    function optionalInteger(trackId, name) {
+      const value = field(trackId, name).value;
+      return value === '' ? null : Number.parseInt(value, 10);
+    }
+
+    function fadeValue(trackId, prefix) {
+      const seconds = numberValue(trackId, `${prefix}_seconds`);
+      if (seconds <= 0) {
+        return null;
+      }
+      return {
+        seconds,
+        curve: field(trackId, `${prefix}_curve`).value
+      };
+    }
+
+    function textInput(track, name, label, value) {
+      return `<label>${label}<input id="${escapeId(track.id)}-${name}" value="${escapeHtml(value)}"></label>`;
+    }
+
+    function numberInput(track, name, label, value, min, step, max = null) {
+      const maxAttr = max === null ? '' : ` max="${max}"`;
+      return `<label>${label}<input id="${escapeId(track.id)}-${name}" type="number" min="${min}" step="${step}"${maxAttr} value="${escapeHtml(value)}"></label>`;
+    }
+
+    function checkboxInput(track, name, label, value) {
+      return `<label>${label}<input id="${escapeId(track.id)}-${name}" type="checkbox" ${value ? 'checked' : ''}></label>`;
+    }
+
+    function selectInput(track, name, label, value, options) {
+      const rendered = options
+        .map(option => `<option value="${option}" ${option === value ? 'selected' : ''}>${option}</option>`)
+        .join('');
+      return `<label>${label}<select id="${escapeId(track.id)}-${name}">${rendered}</select></label>`;
     }
 
     loadState();
