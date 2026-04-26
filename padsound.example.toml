@@ -1,0 +1,41 @@
+schema_version = 1
+name = "Padsound Example"
+
+[[tracks]]
+id = "intro"
+name = "Intro Chime"
+file = "example/intro_chime.wav"
+key = "1"
+mode = "toggle"
+looping = false
+start_at = 0.0
+stop_before_end = 0.0
+volume = 1.0
+midi_note = 36
+midi_volume_cc = 21
+
+[[tracks]]
+id = "hit"
+name = "Cue Hit"
+file = "example/cue_hit.wav"
+key = "2"
+mode = "toggle"
+looping = false
+start_at = 0.0
+stop_before_end = 0.0
+volume = 1.0
+midi_note = 37
+midi_volume_cc = 22
+
+[[tracks]]
+id = "loop"
+name = "Soft Loop"
+file = "example/soft_loop.wav"
+key = "3"
+mode = "hold"
+looping = true
+start_at = 0.0
+stop_before_end = 0.0
+volume = 0.7
+midi_note = 38
+midi_volume_cc = 23

@@ -1,0 +1,4 @@
+/target/
+/show.padsound.toml
+/_notes/
+*.local.*
