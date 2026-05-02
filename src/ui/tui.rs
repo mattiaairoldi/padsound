@@ -124,7 +124,7 @@ struct TuiMessage {
     is_error: bool,
 }
 
-pub fn run(app_state: AppState, command_tx: Sender<Command>, ui_url: String) -> Result<()> {
+pub fn run(app_state: AppState, command_tx: Sender<Command>) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut held_keys = HashSet::new();
     let mut tui_state = TuiState::default();
@@ -134,7 +134,6 @@ pub fn run(app_state: AppState, command_tx: Sender<Command>, ui_url: String) -> 
         command_tx,
         &mut held_keys,
         &mut tui_state,
-        &ui_url,
     );
     restore_terminal(&mut terminal)?;
     result
@@ -146,13 +145,12 @@ fn run_loop(
     command_tx: Sender<Command>,
     held_keys: &mut HashSet<String>,
     tui_state: &mut TuiState,
-    ui_url: &str,
 ) -> Result<()> {
     loop {
         let config = app_state.config();
         let bindings = build_bindings(&config);
         tui_state.clamp_selection(config.tracks.len());
-        draw(terminal, &config, &app_state, ui_url, tui_state)?;
+        draw(terminal, &config, &app_state, tui_state)?;
 
         if !event::poll(Duration::from_millis(80)).context("error reading keyboard input")? {
             continue;
@@ -189,7 +187,6 @@ fn draw(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     config: &Config,
     app_state: &AppState,
-    ui_url: &str,
     tui_state: &TuiState,
 ) -> Result<()> {
     let runtime_state = app_state.runtime_state();
@@ -205,7 +202,6 @@ fn draw(
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
             Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle. Left/Right = volume."),
             Line::from("n = edit mode. In edit mode: r = repeat/single, s = start time."),

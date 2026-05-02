@@ -1,7 +1,7 @@
 # Padsound
 
 Padsound is a small Rust application for triggering audio files quickly from a
-keyboard, MIDI controller, terminal TUI, or local web UI.
+keyboard, MIDI controller, or terminal TUI.
 
 The current target is live theatre use on Linux.
 
@@ -11,7 +11,7 @@ Padsound is currently developed and tested for:
 
 - Linux;
 - PipeWire audio, usually through the PulseAudio compatibility layer;
-- terminal usage with a local web UI for configuration and MIDI learn.
+- terminal TUI usage for playback, MIDI learn, and core cue configuration.
 
 Other platforms are not a current goal. ALSA, JACK, macOS, and Windows are not
 part of the supported release target for now.
@@ -62,8 +62,7 @@ If Rust is missing, install it from <https://rustup.rs/>.
 - MIDI notes for track triggering;
 - MIDI CC for track volume;
 - terminal TUI for live use;
-- minimal local web UI;
-- MIDI learn from the web UI;
+- MIDI learn from the TUI;
 - TOML configuration saving with `schema_version`.
 
 ## Usage
@@ -134,31 +133,13 @@ TUI controls:
 - `x`: stop all tracks;
 - `q`, `Esc`, or `Ctrl+C`: stop all tracks and exit.
 
-Padsound also prints the local web UI address at startup, for example:
-
-```text
-Web UI: http://127.0.0.1:34567
-```
-
-The same address is shown in the TUI header. By default Padsound binds the web
-UI to port `34567`; choose a different port with `--ui-port`, for example:
-
-```bash
-cargo run -- --ui-port 4567
-```
-
-From the TUI or web UI, MIDI learn can be started for each track:
+From the TUI, MIDI learn can be started for each track:
 
 - `Trigger`: saves the next received MIDI note to `midi_note`;
 - `Volume`: saves the next received MIDI control change to `midi_volume_cc`.
 
 TUI edit mode saves repeat and start-time changes to the TOML configuration
 immediately. Runtime volume changes with `Left` and `Right` are not saved.
-
-The web UI can also edit common track fields after a configuration has been
-generated: name, key, mode, loop, offsets, fade settings, volume, and MIDI
-mappings. Changing the audio file path itself still requires editing the TOML
-file and restarting Padsound.
 
 The configuration file is saved back as TOML. The recommended extension is
 `.padsound.toml`, for example `show.padsound.toml`.

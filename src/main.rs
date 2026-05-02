@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -12,7 +12,7 @@ use padsound::config::Config;
 use padsound::input::midi;
 use padsound::state::AppState;
 use padsound::state::TrackRuntimeSpec;
-use padsound::ui::{self, tui};
+use padsound::ui::tui;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -25,7 +25,7 @@ Common commands:
   padsound --config show.padsound.toml
       Start with the selected configuration file.
   padsound --check
-      Validate the configuration without starting audio, keyboard, MIDI, or UI.
+      Validate the configuration without starting audio, keyboard, MIDI, or TUI.
   padsound --generate-config-from-dir ./audio --config show.padsound.toml
       Generate a configuration from audio files in ./audio and exit.
       If show.padsound.toml already exists, Padsound stops without overwriting it.
@@ -39,9 +39,6 @@ Runtime controls:
       Stop all tracks in the TUI.
   q, Esc, Ctrl+C
       Stop everything and exit.
-  local web UI
-      Default address: http://127.0.0.1:34567
-      Use --ui-port to choose a different port.
   MIDI
       Configured notes and CCs control track triggers and volume.
 "
@@ -65,27 +62,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value = "127.0.0.1:34567",
-        help = "Local web UI socket address"
-    )]
-    ui_addr: SocketAddr,
-
-    #[arg(
-        long,
-        value_name = "PORT",
-        help = "Local web UI port; overrides the port part of --ui-addr"
-    )]
-    ui_port: Option<u16>,
-
-    #[arg(
-        long,
         help = "Disable the terminal TUI and use the simple keyboard input loop"
     )]
     no_tui: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(audio_dir) = &args.generate_config_from_dir {
@@ -165,19 +147,14 @@ async fn main() -> Result<()> {
         info.device_name, info.sample_rate, info.channels
     );
 
-    let requested_ui_addr = ui_addr(args.ui_addr, args.ui_port);
-    let ui_addr = ui::serve(app_state.clone(), requested_ui_addr).await?;
-    let ui_url = local_ui_url(ui_addr);
-    println!("Web UI: {ui_url}");
-
-    tokio::spawn({
+    thread::spawn({
         let runtime_state = runtime_state.clone();
-        async move {
+        move || {
             loop {
                 if let Ok(mut state) = runtime_state.lock() {
                     *state = engine.runtime_state();
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                thread::sleep(Duration::from_millis(100));
             }
         }
     });
@@ -191,34 +168,14 @@ async fn main() -> Result<()> {
     }
 
     if args.no_tui {
-        println!("Controls: use the web UI or press configured keys in the terminal.");
+        println!("Controls: press configured keys in the terminal.");
         println!("Exit: q, Esc, or Ctrl+C.");
         println!();
         padsound::input::keyboard::run(&config, command_tx)?;
     } else {
-        println!("Opening terminal TUI. Web UI remains active for MIDI learn/config.");
-        tui::run(app_state, command_tx, ui_url)?;
+        println!("Opening terminal TUI.");
+        tui::run(app_state, command_tx)?;
     }
 
     Ok(())
-}
-
-fn ui_addr(mut addr: SocketAddr, port: Option<u16>) -> SocketAddr {
-    if let Some(port) = port {
-        addr.set_port(port);
-    }
-    addr
-}
-
-fn local_ui_url(addr: SocketAddr) -> String {
-    let host = match addr.ip() {
-        IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
-        IpAddr::V6(ip) if ip.is_unspecified() => "::1".to_string(),
-        ip => ip.to_string(),
-    };
-
-    match addr.ip() {
-        IpAddr::V6(_) => format!("http://[{host}]:{}", addr.port()),
-        IpAddr::V4(_) => format!("http://{host}:{}", addr.port()),
-    }
 }
