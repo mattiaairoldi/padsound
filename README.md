@@ -115,10 +115,16 @@ When Padsound starts, it opens a terminal TUI showing:
 - play/stop state;
 - elapsed time;
 - assigned key;
-- runtime volume.
+- runtime volume;
+- MIDI trigger note and volume CC.
 
 TUI controls:
 
+- `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: select a track;
+- `Enter`: start or stop the selected track;
+- `m`: toggle MIDI learn mode;
+- `k` in MIDI learn mode: learn the selected track trigger note;
+- `v` in MIDI learn mode: learn the selected track volume knob/CC;
 - configured keys, for example `1`, `2`, `3`: trigger tracks;
 - `x`: stop all tracks;
 - `q`, `Esc`, or `Ctrl+C`: stop all tracks and exit.
@@ -136,7 +142,7 @@ UI to port `34567`; choose a different port with `--ui-port`, for example:
 cargo run -- --ui-port 4567
 ```
 
-From the web UI, MIDI learn can be started for each track:
+From the TUI or web UI, MIDI learn can be started for each track:
 
 - `Trigger`: saves the next received MIDI note to `midi_note`;
 - `Volume`: saves the next received MIDI control change to `midi_volume_cc`.

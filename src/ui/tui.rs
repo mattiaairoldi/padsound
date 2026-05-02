@@ -14,11 +14,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::command::Command;
 use crate::config::{Config, PlaybackMode};
-use crate::state::AppState;
+use crate::state::{AppState, LearnKind, LearnRequest};
 
 #[derive(Debug, Clone)]
 struct KeyBinding {
@@ -26,14 +26,32 @@ struct KeyBinding {
     mode: PlaybackMode,
 }
 
+#[derive(Debug, Default)]
+struct TuiState {
+    selected: usize,
+    midi_mode: bool,
+}
+
+impl TuiState {
+    fn clamp_selection(&mut self, track_count: usize) {
+        if track_count == 0 {
+            self.selected = 0;
+        } else if self.selected >= track_count {
+            self.selected = track_count - 1;
+        }
+    }
+}
+
 pub fn run(app_state: AppState, command_tx: Sender<Command>, ui_url: String) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut held_keys = HashSet::new();
+    let mut tui_state = TuiState::default();
     let result = run_loop(
         &mut terminal,
         app_state,
         command_tx,
         &mut held_keys,
+        &mut tui_state,
         &ui_url,
     );
     restore_terminal(&mut terminal)?;
@@ -45,12 +63,14 @@ fn run_loop(
     app_state: AppState,
     command_tx: Sender<Command>,
     held_keys: &mut HashSet<String>,
+    tui_state: &mut TuiState,
     ui_url: &str,
 ) -> Result<()> {
     loop {
         let config = app_state.config();
         let bindings = build_bindings(&config);
-        draw(terminal, &config, &app_state, ui_url)?;
+        tui_state.clamp_selection(config.tracks.len());
+        draw(terminal, &config, &app_state, ui_url, tui_state)?;
 
         if !event::poll(Duration::from_millis(80)).context("error reading keyboard input")? {
             continue;
@@ -67,12 +87,7 @@ fn run_loop(
             break;
         }
 
-        if matches!(key_event.code, KeyCode::Char('x') | KeyCode::Char('X'))
-            && key_event.kind == KeyEventKind::Press
-        {
-            command_tx
-                .send(Command::StopAll)
-                .context("failed to send stop all")?;
+        if handle_tui_key(key_event, &config, &app_state, &command_tx, tui_state)? {
             continue;
         }
 
@@ -87,17 +102,27 @@ fn draw(
     config: &Config,
     app_state: &AppState,
     ui_url: &str,
+    tui_state: &TuiState,
 ) -> Result<()> {
     let runtime_state = app_state.runtime_state();
+    let pending_learn = app_state.pending_learn();
     terminal.draw(|frame| {
         let area = frame.area();
-        let chunks = Layout::vertical([Constraint::Length(6), Constraint::Min(5)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(9), Constraint::Min(5)]).split(area);
 
         let header = Paragraph::new(vec![
-            Line::from("Padsound"),
+            Line::styled(
+                "Padsound",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
-            Line::from("Keys: use configured keys. x = stop all. q / Esc / Ctrl+C = exit."),
+            Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle selected."),
+            Line::from("m = MIDI mode. In MIDI mode: k = trigger note, v = volume knob."),
+            mode_line(tui_state.midi_mode),
+            learn_line(config, pending_learn.as_ref()),
         ])
         .block(Block::default().borders(Borders::ALL));
         frame.render_widget(header, chunks[0]);
@@ -128,8 +153,9 @@ fn draw(
                 Cell::from(status),
                 Cell::from(format!("{:?}", track.mode).to_lowercase()),
                 Cell::from(if track.looping { "yes" } else { "no" }),
-                Cell::from(format!("{volume:.2}")),
+                Cell::from(volume_bar(volume)),
                 Cell::from(position),
+                Cell::from(midi_label(track.midi_note, track.midi_volume_cc)),
             ])
             .style(style)
         });
@@ -138,28 +164,125 @@ fn draw(
             rows,
             [
                 Constraint::Length(6),
-                Constraint::Percentage(36),
+                Constraint::Percentage(30),
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(6),
+                Constraint::Length(18),
                 Constraint::Length(8),
-                Constraint::Length(8),
+                Constraint::Length(16),
             ],
         )
         .header(
-            Row::new(["Key", "Track", "Status", "Mode", "Loop", "Volume", "Time"]).style(
+            Row::new([
+                "Key", "Track", "Status", "Mode", "Loop", "Volume", "Time", "MIDI",
+            ])
+            .style(
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
         )
         .block(Block::default().title("Tracks").borders(Borders::ALL))
-        .row_highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_symbol(">> ")
+        .row_highlight_style(
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        );
 
-        frame.render_widget(table, chunks[1]);
+        let mut table_state = TableState::default();
+        table_state.select(Some(tui_state.selected));
+        frame.render_stateful_widget(table, chunks[1], &mut table_state);
     })?;
 
     Ok(())
+}
+
+fn handle_tui_key(
+    key_event: KeyEvent,
+    config: &Config,
+    app_state: &AppState,
+    command_tx: &Sender<Command>,
+    tui_state: &mut TuiState,
+) -> Result<bool> {
+    if matches!(key_event.code, KeyCode::Char('x') | KeyCode::Char('X'))
+        && key_event.kind == KeyEventKind::Press
+    {
+        command_tx
+            .send(Command::StopAll)
+            .context("failed to send stop all")?;
+        return Ok(true);
+    }
+
+    if handle_selection_key(key_event, config.tracks.len(), tui_state) {
+        return Ok(true);
+    }
+
+    if key_event.kind != KeyEventKind::Press {
+        return Ok(false);
+    }
+
+    match key_event.code {
+        KeyCode::Char('m') | KeyCode::Char('M') => {
+            tui_state.midi_mode = !tui_state.midi_mode;
+            Ok(true)
+        }
+        KeyCode::Enter => {
+            let Some(track) = config.tracks.get(tui_state.selected) else {
+                return Ok(false);
+            };
+            command_tx
+                .send(Command::Toggle {
+                    track_id: track.id.clone(),
+                })
+                .context("failed to send toggle command")?;
+            Ok(true)
+        }
+        KeyCode::Char('k') | KeyCode::Char('K') if tui_state.midi_mode => {
+            start_midi_learn(config, app_state, tui_state.selected, LearnKind::Trigger)
+        }
+        KeyCode::Char('v') | KeyCode::Char('V') if tui_state.midi_mode => {
+            start_midi_learn(config, app_state, tui_state.selected, LearnKind::Volume)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn start_midi_learn(
+    config: &Config,
+    app_state: &AppState,
+    selected: usize,
+    kind: LearnKind,
+) -> Result<bool> {
+    let Some(track) = config.tracks.get(selected) else {
+        return Ok(false);
+    };
+
+    app_state.start_learn(LearnRequest {
+        track_id: track.id.clone(),
+        kind,
+    });
+    Ok(true)
+}
+
+fn handle_selection_key(key_event: KeyEvent, track_count: usize, tui_state: &mut TuiState) -> bool {
+    if track_count == 0 || !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return false;
+    }
+
+    match key_event.code {
+        KeyCode::Up => tui_state.selected = tui_state.selected.saturating_sub(1),
+        KeyCode::Down => tui_state.selected = (tui_state.selected + 1).min(track_count - 1),
+        KeyCode::PageUp => tui_state.selected = tui_state.selected.saturating_sub(10),
+        KeyCode::PageDown => tui_state.selected = (tui_state.selected + 10).min(track_count - 1),
+        KeyCode::Home => tui_state.selected = 0,
+        KeyCode::End => tui_state.selected = track_count - 1,
+        _ => return false,
+    }
+
+    true
 }
 
 fn handle_track_key(
@@ -280,4 +403,63 @@ fn key_label(code: KeyCode) -> Option<String> {
 fn format_time(seconds: f64) -> String {
     let safe_seconds = seconds.max(0.0).floor() as u64;
     format!("{}:{:02}", safe_seconds / 60, safe_seconds % 60)
+}
+
+fn volume_bar(volume: f32) -> String {
+    let clamped = volume.clamp(0.0, 1.0);
+    let width = 10;
+    let filled = (clamped * width as f32).round() as usize;
+    format!(
+        "[{}{}] {:.2}",
+        "#".repeat(filled),
+        "-".repeat(width - filled),
+        clamped
+    )
+}
+
+fn midi_label(note: Option<u8>, cc: Option<u8>) -> String {
+    let note = note
+        .map(|note| note.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let cc = cc
+        .map(|cc| cc.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    format!("N:{note} CC:{cc}")
+}
+
+fn mode_line(midi_mode: bool) -> Line<'static> {
+    if midi_mode {
+        Line::styled(
+            "Mode: MIDI learn",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Line::styled("Mode: playback", Style::default().fg(Color::DarkGray))
+    }
+}
+
+fn learn_line(config: &Config, pending_learn: Option<&LearnRequest>) -> Line<'static> {
+    let Some(request) = pending_learn else {
+        return Line::styled("MIDI learn: idle", Style::default().fg(Color::DarkGray));
+    };
+
+    let kind = match request.kind {
+        LearnKind::Trigger => "trigger note",
+        LearnKind::Volume => "volume knob",
+    };
+    let track_name = config
+        .tracks
+        .iter()
+        .find(|track| track.id == request.track_id)
+        .map(|track| track.name.as_str())
+        .unwrap_or(request.track_id.as_str());
+
+    Line::styled(
+        format!("MIDI learn: waiting for {kind} on {track_name}"),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    )
 }
