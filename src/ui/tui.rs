@@ -17,10 +17,11 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::command::Command;
-use crate::config::{Config, PlaybackMode};
-use crate::state::{AppState, LearnKind, LearnRequest};
+use crate::config::{Config, PlaybackMode, TrackConfig};
+use crate::state::{AppState, LearnKind, LearnRequest, TrackConfigUpdate};
 
 const VOLUME_STEP: f32 = 0.05;
+const MAX_START_INPUT_CHARS: usize = 7;
 
 #[derive(Debug, Clone)]
 struct KeyBinding {
@@ -32,6 +33,9 @@ struct KeyBinding {
 struct TuiState {
     selected: usize,
     midi_mode: bool,
+    edit_mode: bool,
+    start_input: Option<StartInput>,
+    message: Option<TuiMessage>,
 }
 
 impl TuiState {
@@ -42,6 +46,82 @@ impl TuiState {
             self.selected = track_count - 1;
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct StartInput {
+    track_id: String,
+    text: String,
+    pristine: bool,
+}
+
+impl StartInput {
+    fn from_track(track: &TrackConfig) -> Self {
+        Self {
+            track_id: track.id.clone(),
+            text: format_seconds(track.start_at),
+            pristine: true,
+        }
+    }
+
+    fn push_digit(&mut self, digit: char) {
+        self.prepare_for_edit();
+        if self.text.len() >= MAX_START_INPUT_CHARS || self.decimal_digits() >= 2 {
+            return;
+        }
+        self.text.push(digit);
+    }
+
+    fn push_decimal_separator(&mut self) {
+        self.prepare_for_edit();
+        if self.text.contains('.') || self.text.len() >= MAX_START_INPUT_CHARS {
+            return;
+        }
+        if self.text.is_empty() {
+            self.text.push('0');
+        }
+        self.text.push('.');
+    }
+
+    fn backspace(&mut self) {
+        self.prepare_for_edit();
+        self.text.pop();
+    }
+
+    fn seconds(&self) -> Option<f64> {
+        if self.text.is_empty() {
+            return Some(0.0);
+        }
+        self.text.parse::<f64>().ok().filter(|value| *value >= 0.0)
+    }
+
+    fn display_value(&self) -> String {
+        if self.text.is_empty() {
+            "00.00".to_string()
+        } else {
+            self.text.clone()
+        }
+    }
+
+    fn prepare_for_edit(&mut self) {
+        if self.pristine {
+            self.text.clear();
+            self.pristine = false;
+        }
+    }
+
+    fn decimal_digits(&self) -> usize {
+        self.text
+            .split_once('.')
+            .map(|(_, decimals)| decimals.len())
+            .unwrap_or(0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TuiMessage {
+    text: String,
+    is_error: bool,
 }
 
 pub fn run(app_state: AppState, command_tx: Sender<Command>, ui_url: String) -> Result<()> {
@@ -82,6 +162,12 @@ fn run_loop(
             continue;
         };
 
+        if tui_state.start_input.is_some()
+            && handle_start_input_key(key_event, &config, &app_state, tui_state)?
+        {
+            continue;
+        }
+
         if should_quit(key_event) {
             command_tx
                 .send(Command::StopAll)
@@ -110,7 +196,7 @@ fn draw(
     let pending_learn = app_state.pending_learn();
     terminal.draw(|frame| {
         let area = frame.area();
-        let chunks = Layout::vertical([Constraint::Length(9), Constraint::Min(5)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(11), Constraint::Min(5)]).split(area);
 
         let header = Paragraph::new(vec![
             Line::styled(
@@ -122,10 +208,12 @@ fn draw(
             Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
             Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle. Left/Right = volume."),
+            Line::from("n = edit mode. In edit mode: r = repeat/single, s = start time."),
             Line::from(
                 "m = MIDI mode/cancel learn. In MIDI mode: k = trigger note, v = volume knob.",
             ),
-            mode_line(tui_state.midi_mode),
+            mode_line(tui_state),
+            status_line(tui_state),
             learn_line(config, pending_learn.as_ref()),
         ])
         .block(Block::default().borders(Borders::ALL));
@@ -157,6 +245,7 @@ fn draw(
                 Cell::from(status),
                 Cell::from(format!("{:?}", track.mode).to_lowercase()),
                 Cell::from(if track.looping { "yes" } else { "no" }),
+                Cell::from(format_seconds(track.start_at)),
                 Cell::from(volume_bar(volume)),
                 Cell::from(position),
                 Cell::from(midi_label(track.midi_note, track.midi_volume_cc)),
@@ -168,18 +257,19 @@ fn draw(
             rows,
             [
                 Constraint::Length(6),
-                Constraint::Percentage(30),
+                Constraint::Percentage(24),
                 Constraint::Length(8),
                 Constraint::Length(8),
                 Constraint::Length(6),
-                Constraint::Length(18),
+                Constraint::Length(8),
+                Constraint::Length(16),
                 Constraint::Length(8),
                 Constraint::Length(16),
             ],
         )
         .header(
             Row::new([
-                "Key", "Track", "Status", "Mode", "Loop", "Volume", "Time", "MIDI",
+                "Key", "Track", "Status", "Mode", "Loop", "Start", "Volume", "Time", "MIDI",
             ])
             .style(
                 Style::default()
@@ -233,6 +323,10 @@ fn handle_tui_key(
     }
 
     match key_event.code {
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            toggle_edit_mode(app_state, tui_state);
+            Ok(true)
+        }
         KeyCode::Char('m') | KeyCode::Char('M') => {
             toggle_midi_mode(app_state, tui_state);
             Ok(true)
@@ -254,7 +348,74 @@ fn handle_tui_key(
         KeyCode::Char('v') | KeyCode::Char('V') if tui_state.midi_mode => {
             start_midi_learn(config, app_state, tui_state.selected, LearnKind::Volume)
         }
+        KeyCode::Char('r') | KeyCode::Char('R') if tui_state.edit_mode => {
+            toggle_selected_loop(config, app_state, tui_state);
+            Ok(true)
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') if tui_state.edit_mode => {
+            start_start_input(config, tui_state);
+            Ok(true)
+        }
         _ => Ok(false),
+    }
+}
+
+fn handle_start_input_key(
+    key_event: KeyEvent,
+    config: &Config,
+    app_state: &AppState,
+    tui_state: &mut TuiState,
+) -> Result<bool> {
+    if matches!(key_event.code, KeyCode::Char('c'))
+        && key_event.modifiers.contains(KeyModifiers::CONTROL)
+    {
+        return Ok(false);
+    }
+
+    if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(true);
+    }
+
+    match key_event.code {
+        KeyCode::Esc => {
+            tui_state.start_input = None;
+            tui_state.message = Some(TuiMessage {
+                text: "Start time edit cancelled".to_string(),
+                is_error: false,
+            });
+        }
+        KeyCode::Enter => save_start_input(config, app_state, tui_state),
+        KeyCode::Backspace => {
+            if let Some(input) = &mut tui_state.start_input {
+                input.backspace();
+            }
+        }
+        KeyCode::Char(character) if character.is_ascii_digit() => {
+            if let Some(input) = &mut tui_state.start_input {
+                input.push_digit(character);
+            }
+        }
+        KeyCode::Char('.') | KeyCode::Char(',') => {
+            if let Some(input) = &mut tui_state.start_input {
+                input.push_decimal_separator();
+            }
+        }
+        _ => {}
+    }
+
+    Ok(true)
+}
+
+fn toggle_edit_mode(app_state: &AppState, tui_state: &mut TuiState) {
+    if tui_state.edit_mode {
+        tui_state.edit_mode = false;
+        tui_state.start_input = None;
+        tui_state.message = None;
+    } else {
+        tui_state.edit_mode = true;
+        tui_state.midi_mode = false;
+        tui_state.start_input = None;
+        app_state.cancel_learn();
     }
 }
 
@@ -264,6 +425,9 @@ fn toggle_midi_mode(app_state: &AppState, tui_state: &mut TuiState) {
         app_state.cancel_learn();
     } else {
         tui_state.midi_mode = true;
+        tui_state.edit_mode = false;
+        tui_state.start_input = None;
+        tui_state.message = None;
     }
 }
 
@@ -304,6 +468,112 @@ fn handle_volume_key(
         .context("failed to send volume command")?;
 
     Ok(true)
+}
+
+fn toggle_selected_loop(config: &Config, app_state: &AppState, tui_state: &mut TuiState) {
+    let Some(track) = config.tracks.get(tui_state.selected) else {
+        return;
+    };
+
+    let looping = !track.looping;
+    let mut update = update_from_track(track);
+    update.looping = looping;
+
+    match app_state.update_track_config(update) {
+        Ok(()) => {
+            tui_state.message = Some(TuiMessage {
+                text: format!(
+                    "{} set to {}",
+                    track.name,
+                    if looping { "repeat" } else { "single" }
+                ),
+                is_error: false,
+            });
+        }
+        Err(error) => {
+            tui_state.message = Some(TuiMessage {
+                text: format!("Loop update failed: {error}"),
+                is_error: true,
+            });
+        }
+    }
+}
+
+fn start_start_input(config: &Config, tui_state: &mut TuiState) {
+    let Some(track) = config.tracks.get(tui_state.selected) else {
+        return;
+    };
+
+    tui_state.start_input = Some(StartInput::from_track(track));
+    tui_state.message = Some(TuiMessage {
+        text: "Type start time as 00.00, Enter saves, Esc cancels".to_string(),
+        is_error: false,
+    });
+}
+
+fn save_start_input(config: &Config, app_state: &AppState, tui_state: &mut TuiState) {
+    let Some(input) = tui_state.start_input.clone() else {
+        return;
+    };
+
+    let Some(track) = config
+        .tracks
+        .iter()
+        .find(|track| track.id == input.track_id)
+    else {
+        tui_state.message = Some(TuiMessage {
+            text: "Start time update failed: track not found".to_string(),
+            is_error: true,
+        });
+        return;
+    };
+
+    let Some(seconds) = input.seconds() else {
+        tui_state.message = Some(TuiMessage {
+            text: "Start time update failed: invalid number".to_string(),
+            is_error: true,
+        });
+        return;
+    };
+    let mut update = update_from_track(track);
+    update.start_at = seconds;
+
+    match app_state.update_track_config(update) {
+        Ok(()) => {
+            tui_state.start_input = None;
+            tui_state.message = Some(TuiMessage {
+                text: format!(
+                    "{} start time saved at {}",
+                    track.name,
+                    format_seconds(seconds)
+                ),
+                is_error: false,
+            });
+        }
+        Err(error) => {
+            tui_state.message = Some(TuiMessage {
+                text: format!("Start time update failed: {error}"),
+                is_error: true,
+            });
+        }
+    }
+}
+
+fn update_from_track(track: &TrackConfig) -> TrackConfigUpdate {
+    TrackConfigUpdate {
+        track_id: track.id.clone(),
+        name: track.name.clone(),
+        key: track.key.clone(),
+        mode: track.mode,
+        looping: track.looping,
+        start_at: track.start_at,
+        stop_before_end: track.stop_before_end,
+        fade_in: track.fade_in,
+        fade_out: track.fade_out,
+        volume: track.volume,
+        midi_note: track.midi_note,
+        midi_volume_cc: track.midi_volume_cc,
+    }
 }
 
 fn start_midi_learn(
@@ -461,6 +731,15 @@ fn format_time(seconds: f64) -> String {
     format!("{}:{:02}", safe_seconds / 60, safe_seconds % 60)
 }
 
+fn format_seconds(seconds: f64) -> String {
+    let centiseconds = (seconds.max(0.0) * 100.0).round() as u64;
+    format_centiseconds(centiseconds)
+}
+
+fn format_centiseconds(centiseconds: u64) -> String {
+    format!("{:02}.{:02}", centiseconds / 100, centiseconds % 100)
+}
+
 fn volume_bar(volume: f32) -> String {
     let clamped = volume.clamp(0.0, 1.0);
     let width = 10;
@@ -483,8 +762,25 @@ fn midi_label(note: Option<u8>, cc: Option<u8>) -> String {
     format!("N:{note} CC:{cc}")
 }
 
-fn mode_line(midi_mode: bool) -> Line<'static> {
-    if midi_mode {
+fn mode_line(tui_state: &TuiState) -> Line<'static> {
+    if let Some(input) = &tui_state.start_input {
+        Line::styled(
+            format!(
+                "Mode: edit start time {} (digits, Backspace, Enter save, Esc cancel)",
+                input.display_value()
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if tui_state.edit_mode {
+        Line::styled(
+            "Mode: edit",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if tui_state.midi_mode {
         Line::styled(
             "Mode: MIDI learn",
             Style::default()
@@ -494,6 +790,20 @@ fn mode_line(midi_mode: bool) -> Line<'static> {
     } else {
         Line::styled("Mode: playback", Style::default().fg(Color::DarkGray))
     }
+}
+
+fn status_line(tui_state: &TuiState) -> Line<'static> {
+    let Some(message) = &tui_state.message else {
+        return Line::styled("Status: ready", Style::default().fg(Color::DarkGray));
+    };
+
+    let style = if message.is_error {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    Line::styled(format!("Status: {}", message.text), style)
 }
 
 fn learn_line(config: &Config, pending_learn: Option<&LearnRequest>) -> Line<'static> {

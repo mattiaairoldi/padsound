@@ -123,6 +123,10 @@ TUI controls:
 - `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: select a track;
 - `Enter`: start or stop the selected track;
 - `Left`, `Right`: decrease or increase the selected track runtime volume;
+- `n`: toggle edit mode;
+- `r` in edit mode: switch the selected track between repeat and single playback;
+- `s` in edit mode: edit the selected track start time as `00.00` seconds
+  (`.` and `,` are accepted as decimal separators);
 - `m`: toggle MIDI learn mode; when leaving MIDI learn mode, cancel pending learn;
 - `k` in MIDI learn mode: learn the selected track trigger note;
 - `v` in MIDI learn mode: learn the selected track volume knob/CC;
@@ -147,6 +151,9 @@ From the TUI or web UI, MIDI learn can be started for each track:
 
 - `Trigger`: saves the next received MIDI note to `midi_note`;
 - `Volume`: saves the next received MIDI control change to `midi_volume_cc`.
+
+TUI edit mode saves repeat and start-time changes to the TOML configuration
+immediately. Runtime volume changes with `Left` and `Right` are not saved.
 
 The web UI can also edit common track fields after a configuration has been
 generated: name, key, mode, loop, offsets, fade settings, volume, and MIDI
