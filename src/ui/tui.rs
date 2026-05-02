@@ -26,10 +26,16 @@ struct KeyBinding {
     mode: PlaybackMode,
 }
 
-pub fn run(app_state: AppState, command_tx: Sender<Command>) -> Result<()> {
+pub fn run(app_state: AppState, command_tx: Sender<Command>, ui_url: String) -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut held_keys = HashSet::new();
-    let result = run_loop(&mut terminal, app_state, command_tx, &mut held_keys);
+    let result = run_loop(
+        &mut terminal,
+        app_state,
+        command_tx,
+        &mut held_keys,
+        &ui_url,
+    );
     restore_terminal(&mut terminal)?;
     result
 }
@@ -39,11 +45,12 @@ fn run_loop(
     app_state: AppState,
     command_tx: Sender<Command>,
     held_keys: &mut HashSet<String>,
+    ui_url: &str,
 ) -> Result<()> {
     loop {
         let config = app_state.config();
         let bindings = build_bindings(&config);
-        draw(terminal, &config, &app_state)?;
+        draw(terminal, &config, &app_state, ui_url)?;
 
         if !event::poll(Duration::from_millis(80)).context("error reading keyboard input")? {
             continue;
@@ -79,16 +86,18 @@ fn draw(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     config: &Config,
     app_state: &AppState,
+    ui_url: &str,
 ) -> Result<()> {
     let runtime_state = app_state.runtime_state();
     terminal.draw(|frame| {
         let area = frame.area();
-        let chunks = Layout::vertical([Constraint::Length(4), Constraint::Min(5)]).split(area);
+        let chunks = Layout::vertical([Constraint::Length(6), Constraint::Min(5)]).split(area);
 
         let header = Paragraph::new(vec![
             Line::from("Padsound"),
-            Line::from("Keys: use configured keys. x = stop all. q / Esc / Ctrl+C = exit."),
+            Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
+            Line::from("Keys: use configured keys. x = stop all. q / Esc / Ctrl+C = exit."),
         ])
         .block(Block::default().borders(Borders::ALL));
         frame.render_widget(header, chunks[0]);

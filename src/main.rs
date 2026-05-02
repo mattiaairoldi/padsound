@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,7 +40,8 @@ Runtime controls:
   q, Esc, Ctrl+C
       Stop everything and exit.
   local web UI
-      The address is printed at startup; use it for play/stop and MIDI learn.
+      Default address: http://127.0.0.1:34567
+      Use --ui-port to choose a different port.
   MIDI
       Configured notes and CCs control track triggers and volume.
 "
@@ -62,8 +63,19 @@ struct Args {
     )]
     check: bool,
 
-    #[arg(long, default_value = "127.0.0.1:0", help = "Local web UI address")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1:34567",
+        help = "Local web UI socket address"
+    )]
     ui_addr: SocketAddr,
+
+    #[arg(
+        long,
+        value_name = "PORT",
+        help = "Local web UI port; overrides the port part of --ui-addr"
+    )]
+    ui_port: Option<u16>,
 
     #[arg(
         long,
@@ -153,8 +165,10 @@ async fn main() -> Result<()> {
         info.device_name, info.sample_rate, info.channels
     );
 
-    let ui_addr = ui::serve(app_state.clone(), args.ui_addr).await?;
-    println!("Web UI: http://{ui_addr}");
+    let requested_ui_addr = ui_addr(args.ui_addr, args.ui_port);
+    let ui_addr = ui::serve(app_state.clone(), requested_ui_addr).await?;
+    let ui_url = local_ui_url(ui_addr);
+    println!("Web UI: {ui_url}");
 
     tokio::spawn({
         let runtime_state = runtime_state.clone();
@@ -183,8 +197,28 @@ async fn main() -> Result<()> {
         padsound::input::keyboard::run(&config, command_tx)?;
     } else {
         println!("Opening terminal TUI. Web UI remains active for MIDI learn/config.");
-        tui::run(app_state, command_tx)?;
+        tui::run(app_state, command_tx, ui_url)?;
     }
 
     Ok(())
+}
+
+fn ui_addr(mut addr: SocketAddr, port: Option<u16>) -> SocketAddr {
+    if let Some(port) = port {
+        addr.set_port(port);
+    }
+    addr
+}
+
+fn local_ui_url(addr: SocketAddr) -> String {
+    let host = match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+        IpAddr::V6(ip) if ip.is_unspecified() => "::1".to_string(),
+        ip => ip.to_string(),
+    };
+
+    match addr.ip() {
+        IpAddr::V6(_) => format!("http://[{host}]:{}", addr.port()),
+        IpAddr::V4(_) => format!("http://{host}:{}", addr.port()),
+    }
 }

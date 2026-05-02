@@ -126,7 +126,14 @@ TUI controls:
 Padsound also prints the local web UI address at startup, for example:
 
 ```text
-UI web: http://127.0.0.1:34567
+Web UI: http://127.0.0.1:34567
+```
+
+The same address is shown in the TUI header. By default Padsound binds the web
+UI to port `34567`; choose a different port with `--ui-port`, for example:
+
+```bash
+cargo run -- --ui-port 4567
 ```
 
 From the web UI, MIDI learn can be started for each track:
