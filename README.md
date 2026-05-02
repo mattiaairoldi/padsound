@@ -122,7 +122,7 @@ TUI controls:
 
 - `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: select a track;
 - `Enter`: start or stop the selected track;
-- `m`: toggle MIDI learn mode;
+- `m`: toggle MIDI learn mode; when leaving MIDI learn mode, cancel pending learn;
 - `k` in MIDI learn mode: learn the selected track trigger note;
 - `v` in MIDI learn mode: learn the selected track volume knob/CC;
 - configured keys, for example `1`, `2`, `3`: trigger tracks;

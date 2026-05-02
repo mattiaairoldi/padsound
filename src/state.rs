@@ -113,6 +113,10 @@ impl AppState {
         *self.inner.learn.lock().expect("learn mutex") = Some(request);
     }
 
+    pub fn cancel_learn(&self) -> Option<LearnRequest> {
+        self.inner.learn.lock().expect("learn mutex").take()
+    }
+
     pub fn pending_learn(&self) -> Option<LearnRequest> {
         self.inner.learn.lock().expect("learn mutex").clone()
     }

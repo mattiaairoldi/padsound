@@ -120,7 +120,9 @@ fn draw(
             Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
             Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle selected."),
-            Line::from("m = MIDI mode. In MIDI mode: k = trigger note, v = volume knob."),
+            Line::from(
+                "m = MIDI mode/cancel learn. In MIDI mode: k = trigger note, v = volume knob.",
+            ),
             mode_line(tui_state.midi_mode),
             learn_line(config, pending_learn.as_ref()),
         ])
@@ -226,7 +228,7 @@ fn handle_tui_key(
 
     match key_event.code {
         KeyCode::Char('m') | KeyCode::Char('M') => {
-            tui_state.midi_mode = !tui_state.midi_mode;
+            toggle_midi_mode(app_state, tui_state);
             Ok(true)
         }
         KeyCode::Enter => {
@@ -247,6 +249,15 @@ fn handle_tui_key(
             start_midi_learn(config, app_state, tui_state.selected, LearnKind::Volume)
         }
         _ => Ok(false),
+    }
+}
+
+fn toggle_midi_mode(app_state: &AppState, tui_state: &mut TuiState) {
+    if tui_state.midi_mode {
+        tui_state.midi_mode = false;
+        app_state.cancel_learn();
+    } else {
+        tui_state.midi_mode = true;
     }
 }
 
