@@ -122,6 +122,7 @@ TUI controls:
 - `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: select a track;
 - `Enter`: start or stop the selected track;
 - `Left`, `Right`: decrease or increase the selected track runtime volume;
+- `f`: toggle full-screen table mode;
 - `n`: toggle edit mode;
 - `r` in edit mode: switch the selected track between repeat and single playback;
 - `s` in edit mode: edit the selected track start time as `00.00` seconds

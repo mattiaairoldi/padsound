@@ -32,6 +32,7 @@ struct KeyBinding {
 #[derive(Debug, Default)]
 struct TuiState {
     selected: usize,
+    fullscreen: bool,
     midi_mode: bool,
     edit_mode: bool,
     start_input: Option<StartInput>,
@@ -193,27 +194,34 @@ fn draw(
     let pending_learn = app_state.pending_learn();
     terminal.draw(|frame| {
         let area = frame.area();
-        let chunks = Layout::vertical([Constraint::Length(11), Constraint::Min(5)]).split(area);
+        let table_area = if tui_state.fullscreen {
+            area
+        } else {
+            let chunks = Layout::vertical([Constraint::Length(11), Constraint::Min(5)]).split(area);
 
-        let header = Paragraph::new(vec![
-            Line::styled(
-                "Padsound",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Line::from(format!("Config: {}", app_state.config_path().display())),
-            Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle. Left/Right = volume."),
-            Line::from("n = edit mode. In edit mode: r = repeat/single, s = start time."),
-            Line::from(
-                "m = MIDI mode/cancel learn. In MIDI mode: k = trigger note, v = volume knob.",
-            ),
-            mode_line(tui_state),
-            status_line(tui_state),
-            learn_line(config, pending_learn.as_ref()),
-        ])
-        .block(Block::default().borders(Borders::ALL));
-        frame.render_widget(header, chunks[0]);
+            let header = Paragraph::new(vec![
+                Line::styled(
+                    "Padsound",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::from(format!("Config: {}", app_state.config_path().display())),
+                Line::from(
+                    "Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle. Left/Right = volume.",
+                ),
+                Line::from("f = full screen. n = edit mode. In edit mode: r = repeat/single, s = start time."),
+                Line::from(
+                    "m = MIDI mode/cancel learn. In MIDI mode: k = trigger note, v = volume knob.",
+                ),
+                mode_line(tui_state),
+                status_line(tui_state),
+                learn_line(config, pending_learn.as_ref()),
+            ])
+            .block(Block::default().borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+            chunks[1]
+        };
 
         let rows = config.tracks.iter().map(|track| {
             let runtime = runtime_state
@@ -273,7 +281,11 @@ fn draw(
                     .add_modifier(Modifier::BOLD),
             ),
         )
-        .block(Block::default().title("Tracks").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(table_title(config, pending_learn.as_ref(), tui_state))
+                .borders(Borders::ALL),
+        )
         .highlight_symbol(">> ")
         .row_highlight_style(
             Style::default()
@@ -284,7 +296,7 @@ fn draw(
 
         let mut table_state = TableState::default();
         table_state.select(Some(tui_state.selected));
-        frame.render_stateful_widget(table, chunks[1], &mut table_state);
+        frame.render_stateful_widget(table, table_area, &mut table_state);
     })?;
 
     Ok(())
@@ -319,6 +331,10 @@ fn handle_tui_key(
     }
 
     match key_event.code {
+        KeyCode::Char('f') | KeyCode::Char('F') => {
+            tui_state.fullscreen = !tui_state.fullscreen;
+            Ok(true)
+        }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             toggle_edit_mode(app_state, tui_state);
             Ok(true)
@@ -756,6 +772,55 @@ fn midi_label(note: Option<u8>, cc: Option<u8>) -> String {
         .map(|cc| cc.to_string())
         .unwrap_or_else(|| "-".to_string());
     format!("N:{note} CC:{cc}")
+}
+
+fn table_title(
+    config: &Config,
+    pending_learn: Option<&LearnRequest>,
+    tui_state: &TuiState,
+) -> String {
+    if !tui_state.fullscreen {
+        return "Tracks".to_string();
+    }
+
+    let mut parts = vec![
+        "Tracks".to_string(),
+        "full screen".to_string(),
+        "f = normal".to_string(),
+    ];
+    parts.push(format!("mode: {}", compact_mode(tui_state)));
+
+    if let Some(message) = &tui_state.message {
+        parts.push(message.text.clone());
+    }
+
+    if let Some(request) = pending_learn {
+        let kind = match request.kind {
+            LearnKind::Trigger => "trigger",
+            LearnKind::Volume => "volume",
+        };
+        let track_name = config
+            .tracks
+            .iter()
+            .find(|track| track.id == request.track_id)
+            .map(|track| track.name.as_str())
+            .unwrap_or(request.track_id.as_str());
+        parts.push(format!("learn {kind}: {track_name}"));
+    }
+
+    parts.join(" | ")
+}
+
+fn compact_mode(tui_state: &TuiState) -> &'static str {
+    if tui_state.start_input.is_some() {
+        "start input"
+    } else if tui_state.edit_mode {
+        "edit"
+    } else if tui_state.midi_mode {
+        "midi"
+    } else {
+        "playback"
+    }
 }
 
 fn mode_line(tui_state: &TuiState) -> Line<'static> {
