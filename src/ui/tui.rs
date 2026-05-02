@@ -20,6 +20,8 @@ use crate::command::Command;
 use crate::config::{Config, PlaybackMode};
 use crate::state::{AppState, LearnKind, LearnRequest};
 
+const VOLUME_STEP: f32 = 0.05;
+
 #[derive(Debug, Clone)]
 struct KeyBinding {
     track_id: String,
@@ -119,7 +121,7 @@ fn draw(
             ),
             Line::from(format!("Web UI: {ui_url}")),
             Line::from(format!("Config: {}", app_state.config_path().display())),
-            Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle selected."),
+            Line::from("Select: Up/Down/PgUp/PgDn/Home/End. Enter = toggle. Left/Right = volume."),
             Line::from(
                 "m = MIDI mode/cancel learn. In MIDI mode: k = trigger note, v = volume knob.",
             ),
@@ -222,6 +224,10 @@ fn handle_tui_key(
         return Ok(true);
     }
 
+    if handle_volume_key(key_event, config, app_state, command_tx, tui_state.selected)? {
+        return Ok(true);
+    }
+
     if key_event.kind != KeyEventKind::Press {
         return Ok(false);
     }
@@ -259,6 +265,45 @@ fn toggle_midi_mode(app_state: &AppState, tui_state: &mut TuiState) {
     } else {
         tui_state.midi_mode = true;
     }
+}
+
+fn handle_volume_key(
+    key_event: KeyEvent,
+    config: &Config,
+    app_state: &AppState,
+    command_tx: &Sender<Command>,
+    selected: usize,
+) -> Result<bool> {
+    if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(false);
+    }
+
+    let delta = match key_event.code {
+        KeyCode::Left => -VOLUME_STEP,
+        KeyCode::Right => VOLUME_STEP,
+        _ => return Ok(false),
+    };
+
+    let Some(track) = config.tracks.get(selected) else {
+        return Ok(false);
+    };
+
+    let current_volume = app_state
+        .runtime_state()
+        .iter()
+        .find(|runtime| runtime.track_id == track.id)
+        .map(|runtime| runtime.volume)
+        .unwrap_or(track.volume);
+    let volume = (current_volume + delta).clamp(0.0, 1.0);
+
+    command_tx
+        .send(Command::SetVolume {
+            track_id: track.id.clone(),
+            volume,
+        })
+        .context("failed to send volume command")?;
+
+    Ok(true)
 }
 
 fn start_midi_learn(
