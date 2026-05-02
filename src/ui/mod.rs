@@ -363,6 +363,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
       color: #f1df8a;
       display: none;
     }
+    .error {
+      margin: 0 0 16px;
+      padding: 10px 12px;
+      border: 1px solid #7b3131;
+      background: #331818;
+      color: #ffb8b8;
+      display: none;
+    }
     .hint {
       color: #aaa;
       font-size: 13px;
@@ -376,9 +384,10 @@ const INDEX_HTML: &str = r#"<!doctype html>
     <div class="meta" id="config-path"></div>
   </header>
   <div class="pending" id="pending"></div>
+  <div class="error" id="error"></div>
   <div class="hint">Shortcuts also work from this page while the browser window has focus.</div>
   <div class="toolbar">
-    <button onclick="sendCommand('stop_all')">Stop all</button>
+    <button data-command="stop_all">Stop all</button>
   </div>
   <table>
     <thead>
@@ -400,11 +409,37 @@ const INDEX_HTML: &str = r#"<!doctype html>
   </table>
   <script>
     let currentTracks = [];
+    let lastState = null;
+    let isLoadingState = false;
     const heldKeys = new Set();
+    const openEditTrackIds = new Set();
 
-    async function loadState() {
-      const response = await fetch('/api/state');
-      const state = await response.json();
+    async function loadState({force = false} = {}) {
+      if (isLoadingState || (!force && openEditTrackIds.size > 0)) {
+        return;
+      }
+
+      isLoadingState = true;
+      try {
+        const response = await fetch('/api/state');
+        if (!response.ok) {
+          throw new Error(await responseError(response, 'Failed to load state'));
+        }
+        const state = await response.json();
+        if (!force && openEditTrackIds.size > 0) {
+          return;
+        }
+        renderState(state);
+        clearError('state');
+      } catch (error) {
+        showError(`State refresh failed: ${errorMessage(error)}`, 'state');
+      } finally {
+        isLoadingState = false;
+      }
+    }
+
+    function renderState(state) {
+      lastState = state;
       currentTracks = state.tracks;
       document.getElementById('config-path').textContent = state.config_path;
 
@@ -425,27 +460,27 @@ const INDEX_HTML: &str = r#"<!doctype html>
               ${track.is_playing ? `Playing ${formatTime(track.position_seconds)}` : 'Stopped'}
             </span>
           </td>
-          <td>${track.key ?? ''}</td>
-          <td>${track.mode}</td>
+          <td>${escapeHtml(track.key ?? '')}</td>
+          <td>${escapeHtml(track.mode)}</td>
           <td>${track.looping ? 'yes' : 'no'}</td>
           <td>${track.runtime_volume.toFixed(2)}</td>
-          <td>${track.midi_note ?? ''}</td>
-          <td>${track.midi_volume_cc ?? ''}</td>
+          <td>${escapeHtml(track.midi_note ?? '')}</td>
+          <td>${escapeHtml(track.midi_volume_cc ?? '')}</td>
           <td>
             <div class="actions">
-              <button onclick="sendCommand('toggle', ${jsString(track.id)})">Toggle</button>
-              <button onclick="sendCommand('stop', ${jsString(track.id)})">Stop</button>
+              <button data-command="toggle" data-track-id="${escapeHtml(track.id)}">Toggle</button>
+              <button data-command="stop" data-track-id="${escapeHtml(track.id)}">Stop</button>
             </div>
           </td>
           <td>
             <div class="actions">
-              <button onclick="learn(${jsString(track.id)}, 'trigger')">Trigger</button>
-              <button onclick="learn(${jsString(track.id)}, 'volume')">Volume</button>
+              <button data-learn-kind="trigger" data-track-id="${escapeHtml(track.id)}">Trigger</button>
+              <button data-learn-kind="volume" data-track-id="${escapeHtml(track.id)}">Volume</button>
             </div>
           </td>
-          <td><button onclick="toggleEdit(${jsString(track.id)})">Edit</button></td>
+          <td><button data-edit-track-id="${escapeHtml(track.id)}">Edit</button></td>
         </tr>
-        <tr class="edit-row" id="edit-${escapeId(track.id)}">
+        <tr class="edit-row ${openEditTrackIds.has(track.id) ? 'open' : ''}" id="edit-${escapeId(track.id)}">
           <td colspan="11">
             <div class="edit-grid">
               ${textInput(track, 'name', 'Name', track.name)}
@@ -463,8 +498,8 @@ const INDEX_HTML: &str = r#"<!doctype html>
               ${numberInput(track, 'midi_volume_cc', 'MIDI CC', track.midi_volume_cc ?? '', 0, 1, 127)}
             </div>
             <div class="actions">
-              <button onclick="saveTrack(${jsString(track.id)})">Save</button>
-              <button onclick="toggleEdit(${jsString(track.id)})">Cancel</button>
+              <button data-save-track-id="${escapeHtml(track.id)}">Save</button>
+              <button data-edit-track-id="${escapeHtml(track.id)}">Cancel</button>
             </div>
           </td>
         </tr>
@@ -473,24 +508,66 @@ const INDEX_HTML: &str = r#"<!doctype html>
     }
 
     async function learn(trackId, kind) {
-      await fetch('/api/learn', {
-        method: 'POST',
-        headers: {'content-type': 'application/json'},
-        body: JSON.stringify({track_id: trackId, kind})
-      });
-      await loadState();
+      try {
+        const response = await fetch('/api/learn', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({track_id: trackId, kind})
+        });
+        if (!response.ok) {
+          throw new Error(await responseError(response, 'Failed to start MIDI learn'));
+        }
+        clearError('learn');
+        await loadState({force: openEditTrackIds.size === 0});
+      } catch (error) {
+        showError(`MIDI learn failed: ${errorMessage(error)}`, 'learn');
+      }
     }
 
     async function sendCommand(action, trackId = null) {
-      await fetch('/api/command', {
-        method: 'POST',
-        headers: {'content-type': 'application/json'},
-        body: JSON.stringify({action, track_id: trackId})
-      });
+      try {
+        const response = await fetch('/api/command', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({action, track_id: trackId})
+        });
+        if (!response.ok) {
+          throw new Error(await responseError(response, 'Failed to send command'));
+        }
+        clearError('command');
+      } catch (error) {
+        showError(`Command failed: ${errorMessage(error)}`, 'command');
+      }
     }
 
-    function toggleEdit(trackId) {
-      document.getElementById(`edit-${escapeId(trackId)}`)?.classList.toggle('open');
+    async function toggleEdit(trackId) {
+      if (openEditTrackIds.has(trackId)) {
+        await closeEdit(trackId);
+        return;
+      }
+
+      openEditTrackIds.add(trackId);
+      const row = editRow(trackId);
+      if (row) {
+        row.classList.add('open');
+      } else if (lastState) {
+        renderState(lastState);
+      } else {
+        await loadState({force: true});
+      }
+    }
+
+    async function closeEdit(trackId) {
+      openEditTrackIds.delete(trackId);
+      editRow(trackId)?.classList.remove('open');
+
+      if (openEditTrackIds.size === 0) {
+        await loadState({force: true});
+      }
+    }
+
+    function editRow(trackId) {
+      return document.getElementById(`edit-${escapeId(trackId)}`);
     }
 
     async function saveTrack(trackId) {
@@ -514,17 +591,51 @@ const INDEX_HTML: &str = r#"<!doctype html>
         midi_volume_cc: optionalInteger(trackId, 'midi_volume_cc')
       };
 
-      const response = await fetch('/api/track', {
-        method: 'POST',
-        headers: {'content-type': 'application/json'},
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        alert(await response.text());
+      try {
+        const response = await fetch('/api/track', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          throw new Error(await responseError(response, 'Failed to save track'));
+        }
+        clearError('save');
+        await closeEdit(trackId);
+      } catch (error) {
+        showError(`Save failed: ${errorMessage(error)}`, 'save');
+      }
+    }
+
+    document.addEventListener('click', async event => {
+      const button = event.target instanceof Element ? event.target.closest('button') : null;
+      if (!button) {
         return;
       }
-      await loadState();
-    }
+
+      if (button.dataset.command) {
+        event.preventDefault();
+        await sendCommand(button.dataset.command, button.dataset.trackId ?? null);
+        return;
+      }
+
+      if (button.dataset.learnKind) {
+        event.preventDefault();
+        await learn(button.dataset.trackId, button.dataset.learnKind);
+        return;
+      }
+
+      if (button.dataset.editTrackId) {
+        event.preventDefault();
+        await toggleEdit(button.dataset.editTrackId);
+        return;
+      }
+
+      if (button.dataset.saveTrackId) {
+        event.preventDefault();
+        await saveTrack(button.dataset.saveTrackId);
+      }
+    });
 
     document.addEventListener('keydown', event => {
       if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
@@ -620,10 +731,6 @@ const INDEX_HTML: &str = r#"<!doctype html>
       return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
     }
 
-    function jsString(value) {
-      return JSON.stringify(String(value));
-    }
-
     function field(trackId, name) {
       return document.getElementById(`${escapeId(trackId)}-${name}`);
     }
@@ -671,6 +778,32 @@ const INDEX_HTML: &str = r#"<!doctype html>
         .map(option => `<option value="${option}" ${option === value ? 'selected' : ''}>${option}</option>`)
         .join('');
       return `<label>${label}<select id="${escapeId(track.id)}-${name}">${rendered}</select></label>`;
+    }
+
+    async function responseError(response, fallback) {
+      const text = await response.text();
+      return text.trim() || `${fallback} (${response.status})`;
+    }
+
+    function errorMessage(error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+
+    function showError(message, source) {
+      const error = document.getElementById('error');
+      error.dataset.source = source;
+      error.textContent = message;
+      error.style.display = 'block';
+    }
+
+    function clearError(source) {
+      const error = document.getElementById('error');
+      if (error.dataset.source && error.dataset.source !== source) {
+        return;
+      }
+      error.textContent = '';
+      error.style.display = 'none';
+      delete error.dataset.source;
     }
 
     loadState();
