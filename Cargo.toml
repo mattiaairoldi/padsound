@@ -1,6 +1,6 @@
 [package]
 name = "padsound"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Linux/PipeWire audio trigger for live theatre use"
 license = "MIT"

@@ -60,7 +60,7 @@ If Rust is missing, install it from <https://rustup.rs/>.
 - keyboard input;
 - best-effort MIDI input on the first available device;
 - MIDI notes for track triggering;
-- MIDI CC for track volume;
+- MIDI CC for track volume, with absolute or relative knob modes;
 - terminal TUI for live use;
 - MIDI learn from the TUI;
 - TOML configuration saving with `schema_version`.
@@ -147,6 +147,16 @@ The configuration file is saved back as TOML. The recommended extension is
 
 ## Configuration Notes
 
+MIDI volume knobs use relative mode by default, which is suitable for encoders
+that send values such as `64` for down and `65` for up. To use a knob or fader
+that sends absolute CC values from `0` to `127`, set:
+
+```toml
+midi_volume_mode = "absolute"
+```
+
+The supported values are `relative` and `absolute`.
+
 Multiple tracks may point to the same audio file. This is useful for cue
 variants: the same file can have different keyboard/MIDI triggers, offsets,
 volume, loop mode, or fade settings. Padsound decodes shared audio files once at
@@ -186,8 +196,8 @@ The supported release target is Linux x86_64 with PipeWire. Release packages are
 created by GitHub Actions when a tag matching `v*` is pushed, for example:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 The package includes the `padsound` binary, README, license, example config, and

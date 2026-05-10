@@ -1,5 +1,6 @@
 schema_version = 1
 name = "Padsound Example"
+midi_volume_mode = "relative"
 
 [[tracks]]
 id = "intro"

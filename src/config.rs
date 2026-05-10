@@ -11,6 +11,8 @@ pub struct Config {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default)]
+    pub midi_volume_mode: MidiVolumeMode,
     pub tracks: Vec<TrackConfig>,
 }
 
@@ -42,6 +44,14 @@ pub struct TrackConfig {
 pub enum PlaybackMode {
     Toggle,
     Hold,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MidiVolumeMode {
+    #[default]
+    Relative,
+    Absolute,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
@@ -252,6 +262,7 @@ impl Config {
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .filter(|name| !name.trim().is_empty()),
+            midi_volume_mode: MidiVolumeMode::default(),
             tracks,
         })
     }
@@ -262,6 +273,7 @@ impl Default for Config {
         Self {
             schema_version: default_schema_version(),
             name: None,
+            midi_volume_mode: MidiVolumeMode::default(),
             tracks: Vec::new(),
         }
     }
