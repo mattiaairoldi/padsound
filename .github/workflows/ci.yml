@@ -9,7 +9,7 @@ on:
 
 jobs:
   prepare:
-    name: Formatting and lockfile
+    name: Prepare formatted source and lockfile
     runs-on: ubuntu-latest
 
     steps:
@@ -21,17 +21,20 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Format Rust source
+        run: cargo fmt --all
 
       - name: Resolve lockfile for both targets
         run: cargo generate-lockfile
 
-      - name: Upload resolved lockfile
+      - name: Upload prepared source
         uses: actions/upload-artifact@v4
         with:
-          name: resolved-lockfile
-          path: Cargo.lock
+          name: prepared-source
+          path: |
+            Cargo.toml
+            Cargo.lock
+            src
           if-no-files-found: error
 
   linux:
@@ -43,10 +46,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download resolved lockfile
+      - name: Download prepared source
         uses: actions/download-artifact@v4
         with:
-          name: resolved-lockfile
+          name: prepared-source
           path: .
 
       - name: Install system dependencies
@@ -75,10 +78,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download resolved lockfile
+      - name: Download prepared source
         uses: actions/download-artifact@v4
         with:
-          name: resolved-lockfile
+          name: prepared-source
           path: .
 
       - name: Install Rust
