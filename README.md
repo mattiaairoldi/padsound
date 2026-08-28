@@ -1,207 +1,183 @@
 # Padsound
 
 Padsound is a small Rust application for triggering audio files quickly from a
-keyboard, MIDI controller, or terminal TUI.
+keyboard, MIDI controller, terminal TUI, or minimal graphical soundboard.
 
-The current target is live theatre use on Linux.
+It is designed for live theatre use: audio files are decoded when a show opens,
+then played from memory with independent trigger, volume, loop, offset and fade
+settings.
 
-## Platform Support
+## Platform support
 
-Padsound is currently developed and tested for:
+Padsound now has two frontends over the same audio/MIDI engine:
 
-- Linux;
-- PipeWire audio, usually through the PulseAudio compatibility layer;
-- terminal TUI usage for playback, MIDI learn, and core cue configuration.
+- **Linux TUI**: the existing default target, developed and tested with PipeWire
+  through its PulseAudio compatibility layer;
+- **Windows GUI**: an optional `egui/eframe` frontend built with the
+  `windows-gui` Cargo feature and using the Windows audio backend exposed by
+  CPAL.
 
-Other platforms are not a current goal. ALSA, JACK, macOS, and Windows are not
-part of the supported release target for now.
+The Linux TUI remains the default build. The Windows GUI is an MVP and must be
+validated on the intended theatre PC, audio interface and MIDI controller before
+live use.
 
-## Prerequisites
+## Features
 
-On Ubuntu/Debian-like systems, install the Rust toolchain and the native
-libraries needed by the audio and MIDI stack:
+- TOML show configuration and validation;
+- automatic configuration generation from an audio directory;
+- MP3, WAV, FLAC, OGG, Opus, AIFF, AAC and M4A decoding with `symphonia`;
+- audio output with `cpal`;
+- multi-track mixer with simultaneous playback;
+- `toggle` and `hold` playback modes;
+- looping, start offset and stop-before-end offset;
+- fade in/out with linear, equal-power or exponential curves;
+- per-track runtime volume;
+- keyboard triggers;
+- selectable MIDI input;
+- MIDI notes for triggering and MIDI CC for volume;
+- absolute and relative MIDI knob modes;
+- MIDI learn from both the TUI and Windows GUI;
+- explicit audio-device selection;
+- permanent `STOP ALL` control.
+
+## Linux prerequisites
+
+On Ubuntu/Debian-like systems:
 
 ```bash
 sudo apt install build-essential pkg-config libasound2-dev libudev-dev
 ```
 
-PipeWire should be installed and running. On most recent desktop Linux
-distributions this is already the default. A practical check is:
+PipeWire should be installed and running. A practical check is:
 
 ```bash
 pactl info
 ```
 
-The output should show a PipeWire-backed audio server, for example
-`PulseAudio (on PipeWire ...)`.
-
-You also need Rust:
+Install Rust through `rustup` if needed, then verify:
 
 ```bash
 rustc --version
 cargo --version
 ```
 
-If Rust is missing, install it from <https://rustup.rs/>.
+## Linux TUI
 
-## Features
-
-- TOML configuration;
-- configuration validation at startup;
-- automatic configuration generation from an audio directory;
-- audio decoding with `symphonia`;
-- audio output with `cpal`;
-- multi-track mixer;
-- `toggle` and `hold` playback modes;
-- looping;
-- fade in and fade out with selectable curves;
-- start offset and stop-before-end offset;
-- per-track volume;
-- keyboard input;
-- best-effort MIDI input on the first available device;
-- MIDI notes for track triggering;
-- MIDI CC for track volume, with absolute or relative knob modes;
-- terminal TUI for live use;
-- MIDI learn from the TUI;
-- TOML configuration saving with `schema_version`.
-
-## Usage
-
-Try the bundled example configuration:
+Build and run the existing frontend:
 
 ```bash
-cargo run -- --config padsound.example.toml
+cargo build --release --locked --bin padsound
+cargo run --bin padsound -- --config padsound.example.toml
 ```
 
-Generate a configuration from the audio files in a directory:
+Generate a show configuration from a directory:
 
 ```bash
-cargo run -- --generate-config-from-dir ./audio --config show.padsound.toml
+cargo run --bin padsound -- --generate-config-from-dir ./audio --config show.padsound.toml
 ```
 
-Audio files are sorted by filename. Generated tracks use `toggle` mode, volume
-`1.0`, no loop, and automatic key assignment: `1`-`9`, `0`, then keyboard
-letters in order.
-
-If the target config file already exists, Padsound stops without overwriting it.
-Move or delete the existing file before generating a new one.
-
-Alternatively, create a configuration from the example:
+List available audio and MIDI devices:
 
 ```bash
-cp padsound.example.toml show.padsound.toml
+cargo run --bin padsound -- --list-devices
 ```
 
-Edit the audio file paths, then validate the configuration:
+Select devices explicitly or disable MIDI:
 
 ```bash
-cargo run -- --check
+cargo run --bin padsound -- \
+  --config show.padsound.toml \
+  --audio-device "Yamaha AG03" \
+  --midi-device "Arturia MiniLab mkII"
+
+cargo run --bin padsound -- --config show.padsound.toml --no-midi
 ```
 
-Start Padsound:
+Validate configuration without starting audio:
 
 ```bash
-cargo run -- --config show.padsound.toml
+cargo run --bin padsound -- --config show.padsound.toml --check
 ```
 
-If `--config` is not provided, the default is `show.padsound.toml`.
-
-## Runtime Controls
-
-When Padsound starts, it opens a terminal TUI showing:
-
-- tracks;
-- play/stop state;
-- elapsed time;
-- assigned key;
-- runtime volume;
-- MIDI trigger note and volume CC.
-
-TUI controls:
+### TUI controls
 
 - `Up`, `Down`, `PageUp`, `PageDown`, `Home`, `End`: select a track;
 - `Enter`: start or stop the selected track;
-- `Left`, `Right`: decrease or increase the selected track runtime volume;
+- `Left`, `Right`: change its runtime volume;
 - `f`: toggle full-screen table mode;
 - `n`: toggle edit mode;
-- `r` in edit mode: switch the selected track between repeat and single playback;
-- `s` in edit mode: edit the selected track start time as `00.00` seconds
-  (`.` and `,` are accepted as decimal separators);
-- `m`: toggle MIDI learn mode; when leaving MIDI learn mode, cancel pending learn;
-- `k` in MIDI learn mode: learn the selected track trigger note;
-- `v` in MIDI learn mode: learn the selected track volume knob/CC;
-- configured keys, for example `1`, `2`, `3`: trigger tracks;
+- `r` in edit mode: switch repeat/single playback;
+- `s` in edit mode: edit start time;
+- `m`: enter or leave MIDI learn mode;
+- `k` in MIDI learn mode: learn the trigger note;
+- `v` in MIDI learn mode: learn the volume CC;
+- configured keys: trigger tracks;
 - `x`: stop all tracks;
-- `q`, `Esc`, or `Ctrl+C`: stop all tracks and exit.
+- `q`, `Esc`, or `Ctrl+C`: stop everything and exit.
 
-From the TUI, MIDI learn can be started for each track:
+## Windows GUI
 
-- `Trigger`: saves the next received MIDI note to `midi_note`;
-- `Volume`: saves the next received MIDI control change to `midi_volume_cc`.
+Install the current Rust MSVC toolchain and Microsoft C++ build tools, then
+build:
 
-TUI edit mode saves repeat and start-time changes to the TOML configuration
-immediately. Runtime volume changes with `Left` and `Right` are not saved.
+```powershell
+cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui
+```
 
-The configuration file is saved back as TOML. The recommended extension is
-`.padsound.toml`, for example `show.padsound.toml`.
+Run:
 
-## Configuration Notes
+```powershell
+.\target\release\padsound-gui.exe
+```
 
-MIDI volume knobs use relative mode by default, which is suitable for encoders
-that send values such as `64` for down and `65` for up. To use a knob or fader
-that sends absolute CC values from `0` to `127`, set:
+The setup screen lets you:
+
+- enter or drag-and-drop a `.padsound.toml` show file;
+- choose the Windows audio output;
+- choose a MIDI input or disable MIDI;
+- refresh connected devices before opening the show.
+
+The live screen provides large PLAY/STOP controls, per-track sliders, elapsed and
+total time, loop and mapping status, MIDI learn, keyboard triggers and a global
+`STOP ALL` button.
+
+Optional command-line arguments preselect setup values:
+
+```powershell
+.\padsound-gui.exe `
+  --config .\shows\spettacolo.padsound.toml `
+  --audio-device "Yamaha AG03" `
+  --midi-device "Arturia MiniLab mkII"
+```
+
+## Configuration notes
+
+MIDI volume knobs use relative mode by default, suitable for encoders that send
+values such as `64` for down and `65` for up. For knobs or faders that send
+absolute values from `0` to `127`, set:
 
 ```toml
 midi_volume_mode = "absolute"
 ```
 
-The supported values are `relative` and `absolute`.
-
-Multiple tracks may point to the same audio file. This is useful for cue
-variants: the same file can have different keyboard/MIDI triggers, offsets,
-volume, loop mode, or fade settings. Padsound decodes shared audio files once at
-startup and reuses the decoded audio in memory for all variants.
-
-Fade settings are optional:
+Track fades are optional:
 
 ```toml
 fade_in = { seconds = 1.0, curve = "linear" }
 fade_out = { seconds = 2.0, curve = "equal_power" }
 ```
 
-Supported fade curves are `linear`, `equal_power`, and `exponential`.
+Multiple tracks may reference the same file. Padsound decodes that file once at
+startup and reuses the samples for all cue variants.
 
-To disable the TUI and use the simpler terminal keyboard loop:
+## Release targets
 
-```bash
-cargo run -- --no-tui
+Tagged releases are configured to produce:
+
+```text
+padsound-vX.Y.Z-linux-x86_64.tar.gz
+padsound-vX.Y.Z-windows-x86_64.zip
 ```
-
-During execution:
-
-- press configured keys to start or stop tracks;
-- use configured MIDI pads/notes to trigger tracks;
-- use configured MIDI knobs/CCs to control track volume;
-- press `q`, `Esc`, or `Ctrl+C` to stop everything and exit.
-
-## Example Assets
-
-The WAV files in `example/` are short generated sounds included only for trying
-Padsound quickly. They are part of this repository and covered by the repository
-license.
-
-## Releases
-
-The supported release target is Linux x86_64 with PipeWire. Release packages are
-created by GitHub Actions when a tag matching `v*` is pushed, for example:
-
-```bash
-git tag v0.2.2
-git push origin v0.2.2
-```
-
-The package includes the `padsound` binary, README, license, example config, and
-example audio files.
 
 ## License
 

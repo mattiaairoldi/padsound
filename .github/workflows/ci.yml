@@ -2,17 +2,52 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "feature/**"
   pull_request:
 
 jobs:
-  test:
-    name: Format, lint, and test
+  prepare:
+    name: Formatting and lockfile
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Resolve lockfile for both targets
+        run: cargo generate-lockfile
+
+      - name: Upload resolved lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-lockfile
+          path: Cargo.lock
+          if-no-files-found: error
+
+  linux:
+    name: Linux TUI
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download resolved lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
+          path: .
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libudev-dev
@@ -20,13 +55,42 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --check
+          components: clippy
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --features tui --bin padsound --lib --tests -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked --features tui
+
+      - name: Release build
+        run: cargo build --release --locked --features tui --bin padsound
+
+  windows:
+    name: Windows GUI
+    runs-on: windows-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download resolved lockfile
+        uses: actions/download-artifact@v4
+        with:
+          name: resolved-lockfile
+          path: .
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy Windows GUI
+        run: cargo clippy --locked --no-default-features --features windows-gui --bin padsound-gui --lib --tests -- -D warnings
+
+      - name: Test shared library
+        run: cargo test --locked --no-default-features --features windows-gui --lib
+
+      - name: Release build
+        run: cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui

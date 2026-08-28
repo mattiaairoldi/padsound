@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use crossbeam_channel::Sender;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 
@@ -41,14 +41,35 @@ impl MidiRuntime {
     }
 }
 
+pub fn input_device_names() -> Result<Vec<String>> {
+    let midi_in = MidiInput::new("padsound-midi-scan").context("failed to initialize MIDI")?;
+    let mut names = midi_in
+        .ports()
+        .iter()
+        .filter_map(|port| midi_in.port_name(port).ok())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    Ok(names)
+}
+
 pub fn start(config: &Config, command_tx: Sender<Command>) -> Result<Option<MidiRuntime>> {
-    start_with_learn(config, command_tx, None)
+    start_with_learn_on_device(config, command_tx, None, None)
 }
 
 pub fn start_with_learn(
     config: &Config,
     command_tx: Sender<Command>,
     app_state: Option<AppState>,
+) -> Result<Option<MidiRuntime>> {
+    start_with_learn_on_device(config, command_tx, app_state, None)
+}
+
+pub fn start_with_learn_on_device(
+    config: &Config,
+    command_tx: Sender<Command>,
+    app_state: Option<AppState>,
+    preferred_device: Option<&str>,
 ) -> Result<Option<MidiRuntime>> {
     let mut bindings = MidiBindings::from_config(config);
 
@@ -60,10 +81,24 @@ pub fn start_with_learn(
     midi_in.ignore(Ignore::None);
 
     let ports = midi_in.ports();
-    let Some(port) = ports.first() else {
+    if ports.is_empty() {
+        if let Some(preferred_device) = preferred_device {
+            bail!("MIDI input device not found: {preferred_device}");
+        }
         return Ok(None);
-    };
+    }
 
+    let port_index = if let Some(preferred_device) = preferred_device {
+        ports
+            .iter()
+            .position(|port| {
+                midi_in.port_name(port).ok().as_deref() == Some(preferred_device)
+            })
+            .ok_or_else(|| anyhow!("MIDI input device not found: {preferred_device}"))?
+    } else {
+        0
+    };
+    let port = &ports[port_index];
     let device_name = midi_in
         .port_name(port)
         .unwrap_or_else(|_| "unknown MIDI device".to_string());
