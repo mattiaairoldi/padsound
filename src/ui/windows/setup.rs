@@ -143,7 +143,9 @@ impl PadsoundGui {
         let dropped_files = ui.input(|input| input.raw.dropped_files.clone());
         if let Some(path) = dropped_files
             .into_iter()
-            .find_map(|file| file.path().map(|path| path.to_path_buf())) {
+            .map(|file| file.path().to_path_buf())
+            .find(|path| !path.as_os_str().is_empty())
+        {
             self.config_path = path.to_string_lossy().into_owned();
         }
     }
