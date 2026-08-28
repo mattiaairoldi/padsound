@@ -91,9 +91,7 @@ pub fn start_with_learn_on_device(
     let port_index = if let Some(preferred_device) = preferred_device {
         ports
             .iter()
-            .position(|port| {
-                midi_in.port_name(port).ok().as_deref() == Some(preferred_device)
-            })
+            .position(|port| midi_in.port_name(port).ok().as_deref() == Some(preferred_device))
             .ok_or_else(|| anyhow!("MIDI input device not found: {preferred_device}"))?
     } else {
         0
@@ -397,20 +395,16 @@ mod tests {
         handle_message(&[0xB0, 21, 65], &mut bindings, &tx, None);
         handle_message(&[0xB0, 21, 64], &mut bindings, &tx, None);
 
-        assert_eq!(
-            rx.try_recv().expect("command"),
-            Command::SetVolume {
-                track_id: "intro".to_string(),
-                volume: 0.52
-            }
-        );
-        assert_eq!(
-            rx.try_recv().expect("command"),
-            Command::SetVolume {
-                track_id: "intro".to_string(),
-                volume: 0.5
-            }
-        );
+        assert_volume_command(rx.try_recv().expect("command"), "intro", 0.52);
+        assert_volume_command(rx.try_recv().expect("command"), "intro", 0.5);
+    }
+
+    fn assert_volume_command(command: Command, expected_track_id: &str, expected_volume: f32) {
+        let Command::SetVolume { track_id, volume } = command else {
+            panic!("expected SetVolume command");
+        };
+        assert_eq!(track_id, expected_track_id);
+        assert!((volume - expected_volume).abs() < 1.0e-6);
     }
 
     #[test]
