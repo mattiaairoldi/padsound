@@ -93,7 +93,9 @@ jobs:
         run: cargo clippy --locked --no-default-features --features windows-gui --bin padsound-gui --lib --tests -- -D warnings
 
       - name: Test shared library
-        run: cargo test --locked --no-default-features --features windows-gui --lib
+        # This fixture intentionally uses a '?' filename, which Windows forbids.
+        # Linux still runs the complete test suite above.
+        run: cargo test --locked --no-default-features --features windows-gui --lib -- --skip generated_ids_are_sanitized_and_unique
 
       - name: Release build
         run: cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui
