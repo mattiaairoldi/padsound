@@ -103,3 +103,20 @@ jobs:
 
       - name: Release build
         run: cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui
+
+      - name: Stage downloadable Windows package
+        shell: pwsh
+        run: |
+          $package = "dist/padsound-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "target/release/padsound-gui.exe" $package
+          Copy-Item README.md, LICENSE, padsound.example.toml $package
+          Copy-Item example "$package/example" -Recurse
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: padsound-windows-x86_64
+          path: dist/padsound-windows-x86_64
+          if-no-files-found: error
+          retention-days: 14
