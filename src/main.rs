@@ -1,23 +1,17 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use padsound::audio::engine::AudioEngine;
-use padsound::audio::mixer::RuntimeTrackState;
+use padsound::audio::engine::output_device_names;
 use padsound::config::Config;
-use padsound::input::midi;
-use padsound::state::AppState;
-use padsound::state::TrackRuntimeSpec;
+use padsound::input::midi::input_device_names;
+use padsound::runtime::{PadsoundRuntime, RuntimeOptions};
 use padsound::ui::tui;
 
 #[derive(Debug, Parser)]
 #[command(
     version,
-    about = "Padsound audio trigger for Linux theatre use",
+    about = "Padsound audio trigger for live theatre use",
     after_help = "\
 Common commands:
   padsound
@@ -26,9 +20,10 @@ Common commands:
       Start with the selected configuration file.
   padsound --check
       Validate the configuration without starting audio, keyboard, MIDI, or TUI.
+  padsound --list-devices
+      List audio outputs and MIDI inputs, then exit.
   padsound --generate-config-from-dir ./audio --config show.padsound.toml
       Generate a configuration from audio files in ./audio and exit.
-      If show.padsound.toml already exists, Padsound stops without overwriting it.
   padsound --no-tui
       Start without the TUI, using the simple keyboard input loop.
 
@@ -65,10 +60,27 @@ struct Args {
         help = "Disable the terminal TUI and use the simple keyboard input loop"
     )]
     no_tui: bool,
+
+    #[arg(long, help = "List audio and MIDI devices, then exit")]
+    list_devices: bool,
+
+    #[arg(long, value_name = "NAME", help = "Use a specific audio output device")]
+    audio_device: Option<String>,
+
+    #[arg(long, value_name = "NAME", help = "Use a specific MIDI input device")]
+    midi_device: Option<String>,
+
+    #[arg(long, help = "Disable MIDI input")]
+    no_midi: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.list_devices {
+        print_devices()?;
+        return Ok(());
+    }
 
     if let Some(audio_dir) = &args.generate_config_from_dir {
         if args.config.exists() {
@@ -90,7 +102,6 @@ fn main() -> Result<()> {
     }
 
     let config = Config::load(&args.config)?;
-    let base_dir = Config::base_dir(&args.config);
 
     println!(
         "Loaded configuration: {} tracks from {}",
@@ -115,66 +126,62 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let engine = AudioEngine::start(&config, &base_dir)?;
-    let command_tx = engine.sender();
-    let runtime_state: Arc<Mutex<Vec<RuntimeTrackState>>> =
-        Arc::new(Mutex::new(engine.runtime_state()));
-    let track_specs = engine
-        .info()
-        .tracks
-        .iter()
-        .map(|track| {
-            (
-                track.id.clone(),
-                TrackRuntimeSpec {
-                    frame_count: track.frame_count,
-                    sample_rate: track.sample_rate,
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let app_state = AppState::new(
-        config.clone(),
-        args.config.clone(),
-        base_dir.clone(),
-        command_tx.clone(),
-        runtime_state.clone(),
-        track_specs,
-    );
-    let info = engine.info();
+    let runtime = PadsoundRuntime::start(
+        config,
+        args.config,
+        RuntimeOptions {
+            audio_device: args.audio_device,
+            midi_device: args.midi_device,
+            disable_midi: args.no_midi,
+        },
+    )?;
+    let info = runtime.audio_info();
     println!(
         "Audio started: {} - {} Hz - {} channels",
         info.device_name, info.sample_rate, info.channels
     );
 
-    thread::spawn({
-        let runtime_state = runtime_state.clone();
-        move || {
-            loop {
-                if let Ok(mut state) = runtime_state.lock() {
-                    *state = engine.runtime_state();
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-        }
-    });
-
-    let midi_runtime =
-        midi::start_with_learn(&config, command_tx.clone(), Some(app_state.clone()))?;
-    if let Some(midi_runtime) = &midi_runtime {
-        println!("MIDI active: {}", midi_runtime.device_name());
+    if let Some(device_name) = runtime.midi_device_name() {
+        println!("MIDI active: {device_name}");
     } else {
-        println!("MIDI inactive: no mapping configured or no device found.");
+        println!("MIDI inactive: disabled, unmapped, or no device found.");
     }
 
+    let command_tx = runtime.command_sender();
     if args.no_tui {
         println!("Controls: press configured keys in the terminal.");
         println!("Exit: q, Esc, or Ctrl+C.");
         println!();
+        let config = runtime.app_state().config();
         padsound::input::keyboard::run(&config, command_tx)?;
     } else {
         println!("Opening terminal TUI.");
-        tui::run(app_state, command_tx)?;
+        tui::run(runtime.app_state(), command_tx)?;
+    }
+
+    Ok(())
+}
+
+fn print_devices() -> Result<()> {
+    println!("Audio outputs:");
+    let audio_devices = output_device_names()?;
+    if audio_devices.is_empty() {
+        println!("  (none)");
+    } else {
+        for device in audio_devices {
+            println!("  {device}");
+        }
+    }
+
+    println!();
+    println!("MIDI inputs:");
+    let midi_devices = input_device_names()?;
+    if midi_devices.is_empty() {
+        println!("  (none)");
+    } else {
+        for device in midi_devices {
+            println!("  {device}");
+        }
     }
 
     Ok(())

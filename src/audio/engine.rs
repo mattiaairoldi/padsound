@@ -43,15 +43,21 @@ pub struct AudioEngine {
     command_tx: Sender<Command>,
     _stream: cpal::Stream,
     info: AudioEngineInfo,
-    mixer: Arc<Mutex<Mixer>>,
+    runtime_state: Arc<Mutex<Vec<RuntimeTrackState>>>,
 }
 
 impl AudioEngine {
     pub fn start(config: &Config, base_dir: &Path) -> Result<Self> {
+        Self::start_with_device(config, base_dir, None)
+    }
+
+    pub fn start_with_device(
+        config: &Config,
+        base_dir: &Path,
+        preferred_device: Option<&str>,
+    ) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .context("no output audio device available")?;
+        let device = select_output_device(&host, preferred_device)?;
         let device_name = device
             .name()
             .unwrap_or_else(|_| "unknown audio device".to_string());
@@ -76,14 +82,16 @@ impl AudioEngine {
             .collect();
 
         let (command_tx, command_rx) = unbounded();
-        let mixer = Arc::new(Mutex::new(Mixer::new(tracks)));
+        let mixer = Mixer::new(tracks);
+        let runtime_state = Arc::new(Mutex::new(mixer.runtime_state()));
         let stream = build_stream(
             &device,
             &stream_config,
             sample_format,
             channels,
-            mixer.clone(),
+            mixer,
             command_rx,
+            runtime_state.clone(),
         )?;
 
         stream.play().context("failed to start audio stream")?;
@@ -97,7 +105,7 @@ impl AudioEngine {
                 channels,
                 tracks: track_infos,
             },
-            mixer,
+            runtime_state,
         })
     }
 
@@ -110,8 +118,45 @@ impl AudioEngine {
     }
 
     pub fn runtime_state(&self) -> Vec<RuntimeTrackState> {
-        self.mixer.lock().expect("mixer mutex").runtime_state()
+        self.runtime_state
+            .lock()
+            .expect("runtime state mutex")
+            .clone()
     }
+
+    pub fn shared_runtime_state(&self) -> Arc<Mutex<Vec<RuntimeTrackState>>> {
+        self.runtime_state.clone()
+    }
+}
+
+pub fn output_device_names() -> Result<Vec<String>> {
+    let host = cpal::default_host();
+    let devices = host
+        .output_devices()
+        .context("failed to enumerate audio output devices")?;
+    let mut names = devices
+        .filter_map(|device| device.name().ok())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    Ok(names)
+}
+
+fn select_output_device(host: &cpal::Host, preferred_device: Option<&str>) -> Result<cpal::Device> {
+    if let Some(preferred_device) = preferred_device {
+        let devices = host
+            .output_devices()
+            .context("failed to enumerate audio output devices")?;
+        for device in devices {
+            if device.name().ok().as_deref() == Some(preferred_device) {
+                return Ok(device);
+            }
+        }
+        bail!("audio output device not found: {preferred_device}");
+    }
+
+    host.default_output_device()
+        .context("no output audio device available")
 }
 
 fn load_tracks(
@@ -202,76 +247,95 @@ pub fn runtime_update_for_track(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     sample_format: cpal::SampleFormat,
     channels: usize,
-    mixer: Arc<Mutex<Mixer>>,
+    mixer: Mixer,
     command_rx: Receiver<Command>,
+    runtime_state: Arc<Mutex<Vec<RuntimeTrackState>>>,
 ) -> Result<cpal::Stream> {
-    let error_callback = |error| terminal::error(format!("audio stream error: {error}"));
-
     match sample_format {
-        cpal::SampleFormat::F32 => {
-            let mut frame = vec![0.0; channels];
-            device
-                .build_output_stream(
-                    config,
-                    move |data: &mut [f32], _| {
-                        write_output(data, channels, &mixer, &command_rx, &mut frame);
-                    },
-                    error_callback,
-                    None,
-                )
-                .context("failed to create f32 audio stream")
-        }
-        cpal::SampleFormat::I16 => {
-            let mut frame = vec![0.0; channels];
-            device
-                .build_output_stream(
-                    config,
-                    move |data: &mut [i16], _| {
-                        write_output(data, channels, &mixer, &command_rx, &mut frame);
-                    },
-                    error_callback,
-                    None,
-                )
-                .context("failed to create i16 audio stream")
-        }
-        cpal::SampleFormat::U16 => {
-            let mut frame = vec![0.0; channels];
-            device
-                .build_output_stream(
-                    config,
-                    move |data: &mut [u16], _| {
-                        write_output(data, channels, &mixer, &command_rx, &mut frame);
-                    },
-                    error_callback,
-                    None,
-                )
-                .context("failed to create u16 audio stream")
-        }
+        cpal::SampleFormat::F32 => build_typed_stream::<f32>(
+            device,
+            config,
+            channels,
+            mixer,
+            command_rx,
+            runtime_state,
+        ),
+        cpal::SampleFormat::I16 => build_typed_stream::<i16>(
+            device,
+            config,
+            channels,
+            mixer,
+            command_rx,
+            runtime_state,
+        ),
+        cpal::SampleFormat::U16 => build_typed_stream::<u16>(
+            device,
+            config,
+            channels,
+            mixer,
+            command_rx,
+            runtime_state,
+        ),
         other => bail!("unsupported audio sample format: {other:?}"),
     }
 }
 
+fn build_typed_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    mut mixer: Mixer,
+    command_rx: Receiver<Command>,
+    runtime_state: Arc<Mutex<Vec<RuntimeTrackState>>>,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32> + Send + 'static,
+{
+    let mut frame = vec![0.0; channels];
+    let snapshot_interval_frames = (config.sample_rate.0 / 20).max(1) as usize;
+    let mut frames_since_snapshot = 0usize;
+    let error_callback = |error| terminal::error(format!("audio stream error: {error}"));
+
+    device
+        .build_output_stream(
+            config,
+            move |data: &mut [T], _| {
+                write_output(
+                    data,
+                    channels,
+                    &mut mixer,
+                    &command_rx,
+                    &mut frame,
+                    &runtime_state,
+                    &mut frames_since_snapshot,
+                    snapshot_interval_frames,
+                );
+            },
+            error_callback,
+            None,
+        )
+        .context("failed to create audio output stream")
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_output<T>(
     data: &mut [T],
     channels: usize,
-    mixer: &Arc<Mutex<Mixer>>,
+    mixer: &mut Mixer,
     command_rx: &Receiver<Command>,
     frame: &mut [f32],
+    runtime_state: &Arc<Mutex<Vec<RuntimeTrackState>>>,
+    frames_since_snapshot: &mut usize,
+    snapshot_interval_frames: usize,
 ) where
     T: cpal::Sample + cpal::FromSample<f32>,
 {
-    let Ok(mut mixer) = mixer.try_lock() else {
-        for sample in data {
-            *sample = T::from_sample(0.0);
-        }
-        return;
-    };
-
     for command in command_rx.try_iter() {
         mixer.handle_command(command);
     }
@@ -281,5 +345,13 @@ fn write_output<T>(
         for (sample, value) in output_frame.iter_mut().zip(frame.iter()) {
             *sample = T::from_sample(*value);
         }
+    }
+
+    *frames_since_snapshot = frames_since_snapshot.saturating_add(data.len() / channels);
+    if *frames_since_snapshot >= snapshot_interval_frames {
+        if let Ok(mut state) = runtime_state.try_lock() {
+            mixer.update_runtime_state(&mut state);
+        }
+        *frames_since_snapshot = 0;
     }
 }

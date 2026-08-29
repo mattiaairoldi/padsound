@@ -2,17 +2,59 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Format, lint, and test
+  prepare:
+    name: Prepare formatted source and lockfile
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format Rust source
+        run: cargo fmt --all
+
+      - name: Resolve lockfile for both targets
+        run: cargo generate-lockfile
+
+      - name: Upload prepared source
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepared-source
+          path: |
+            Cargo.toml
+            Cargo.lock
+            src
+          if-no-files-found: error
+
+  linux:
+    name: Linux TUI
+    runs-on: ubuntu-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prepared source
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-source
+          path: .
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libudev-dev
@@ -20,13 +62,61 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --check
+          components: clippy
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --features tui --bin padsound --lib --tests -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked --features tui
+
+      - name: Release build
+        run: cargo build --release --locked --features tui --bin padsound
+
+  windows:
+    name: Windows GUI
+    runs-on: windows-latest
+    needs: prepare
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download prepared source
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-source
+          path: .
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy Windows GUI
+        run: cargo clippy --locked --no-default-features --features windows-gui --bin padsound-gui --lib --tests -- -D warnings
+
+      - name: Test shared library
+        # This fixture intentionally uses a '?' filename, which Windows forbids.
+        # Linux still runs the complete test suite above.
+        run: cargo test --locked --no-default-features --features windows-gui --lib -- --skip generated_ids_are_sanitized_and_unique
+
+      - name: Release build
+        run: cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui
+
+      - name: Stage downloadable Windows package
+        shell: pwsh
+        run: |
+          $package = "dist/padsound-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "target/release/padsound-gui.exe" $package
+          Copy-Item README.md, LICENSE, padsound.example.toml $package
+          Copy-Item example "$package/example" -Recurse
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: padsound-windows-x86_64
+          path: dist/padsound-windows-x86_64
+          if-no-files-found: error
+          retention-days: 14

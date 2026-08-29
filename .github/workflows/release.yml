@@ -23,8 +23,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
+
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --features tui --bin padsound
 
       - name: Package
         shell: bash
@@ -37,7 +40,40 @@ jobs:
           cp -R example "dist/${package}/example"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
-      - name: Publish GitHub release
+      - name: Publish Linux artifact
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*.tar.gz
+
+  windows:
+    name: Windows GUI release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
+
+      - name: Build
+        run: cargo build --release --locked --no-default-features --features windows-gui --bin padsound-gui
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}" -replace '^v', ''
+          $package = "padsound-v$version-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path "dist/$package" | Out-Null
+          Copy-Item "target/release/padsound-gui.exe" "dist/$package/"
+          Copy-Item README.md, LICENSE, padsound.example.toml "dist/$package/"
+          Copy-Item example "dist/$package/example" -Recurse
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+
+      - name: Publish Windows artifact
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.zip

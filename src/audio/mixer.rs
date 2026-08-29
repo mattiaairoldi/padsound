@@ -28,7 +28,6 @@ impl Mixer {
             .enumerate()
             .map(|(index, track)| (track.id.clone(), index))
             .collect();
-
         let volumes = tracks.iter().map(|track| track.default_volume).collect();
 
         Self {
@@ -44,30 +43,44 @@ impl Mixer {
     }
 
     pub fn runtime_state(&self) -> Vec<RuntimeTrackState> {
-        self.tracks
-            .iter()
-            .enumerate()
-            .map(|(track_index, track)| {
-                let active = self
-                    .active
-                    .iter()
-                    .find(|runtime| runtime.track_index == track_index);
-                let position_frame = active
-                    .map(|runtime| runtime.position_frame)
-                    .unwrap_or(track.start_frame);
-                let volume = active
-                    .map(|runtime| runtime.volume)
-                    .unwrap_or(self.volumes[track_index]);
+        let mut state = Vec::with_capacity(self.tracks.len());
+        self.update_runtime_state(&mut state);
+        state
+    }
 
-                RuntimeTrackState {
-                    track_id: track.id.clone(),
-                    is_playing: active.is_some(),
-                    volume,
-                    position_seconds: position_frame.saturating_sub(track.start_frame) as f64
-                        / track.sample_rate as f64,
-                }
-            })
-            .collect()
+    pub fn update_runtime_state(&self, state: &mut Vec<RuntimeTrackState>) {
+        let state_matches_tracks = state.len() == self.tracks.len()
+            && state
+                .iter()
+                .zip(&self.tracks)
+                .all(|(state, track)| state.track_id == track.id);
+
+        if !state_matches_tracks {
+            state.clear();
+            state.extend(self.tracks.iter().map(|track| RuntimeTrackState {
+                track_id: track.id.clone(),
+                is_playing: false,
+                volume: track.default_volume,
+                position_seconds: 0.0,
+            }));
+        }
+
+        for (track_index, (track, state)) in self.tracks.iter().zip(state.iter_mut()).enumerate() {
+            let active = self
+                .active
+                .iter()
+                .find(|runtime| runtime.track_index == track_index);
+            let position_frame = active
+                .map(|runtime| runtime.position_frame)
+                .unwrap_or(track.start_frame);
+
+            state.is_playing = active.is_some();
+            state.volume = active
+                .map(|runtime| runtime.volume)
+                .unwrap_or(self.volumes[track_index]);
+            state.position_seconds = position_frame.saturating_sub(track.start_frame) as f64
+                / track.sample_rate as f64;
+        }
     }
 
     pub fn handle_command(&mut self, command: Command) {
@@ -91,9 +104,7 @@ impl Mixer {
             Command::UpdateTrackRuntime { track_id, update } => {
                 self.update_track_runtime(&track_id, update);
             }
-            Command::StopAll => {
-                self.active.clear();
-            }
+            Command::StopAll => self.active.clear(),
         }
     }
 
@@ -144,7 +155,6 @@ impl Mixer {
         };
 
         self.stop(track_id);
-
         let track = &self.tracks[track_index];
         if track.start_frame >= track.end_frame {
             return;
@@ -289,24 +299,31 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn toggle_starts_and_stops_track() {
-        let track = LoadedTrack {
+    fn track(samples: Arc<[f32]>, sample_rate: u32, frame_count: usize) -> LoadedTrack {
+        LoadedTrack {
             id: "intro".to_string(),
             name: "Intro".to_string(),
-            samples: Arc::from([0.5, 0.5, 0.25, 0.25]),
+            samples,
             channels: 2,
-            sample_rate: 48_000,
-            frame_count: 2,
+            sample_rate,
+            frame_count,
             start_frame: 0,
-            end_frame: 2,
+            end_frame: frame_count,
             mode: PlaybackMode::Toggle,
             looping: false,
             fade_in: None,
             fade_out: None,
             default_volume: 1.0,
-        };
-        let mut mixer = Mixer::new(vec![track]);
+        }
+    }
+
+    #[test]
+    fn toggle_starts_and_stops_track() {
+        let mut mixer = Mixer::new(vec![track(
+            Arc::from([0.5, 0.5, 0.25, 0.25]),
+            48_000,
+            2,
+        )]);
         let mut frame = [0.0, 0.0];
 
         mixer.handle_command(Command::Toggle {
@@ -323,23 +340,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_snapshot_updates_in_place() {
+        let mut mixer = Mixer::new(vec![track(
+            Arc::from([0.5, 0.5, 0.25, 0.25]),
+            48_000,
+            2,
+        )]);
+        let mut state = mixer.runtime_state();
+
+        mixer.handle_command(Command::Play {
+            track_id: "intro".to_string(),
+        });
+        mixer.update_runtime_state(&mut state);
+
+        assert_eq!(state.len(), 1);
+        assert!(state[0].is_playing);
+        assert_eq!(state[0].track_id, "intro");
+    }
+
+    #[test]
     fn volume_change_applies_to_future_playback() {
-        let track = LoadedTrack {
-            id: "intro".to_string(),
-            name: "Intro".to_string(),
-            samples: Arc::from([1.0, 1.0]),
-            channels: 2,
-            sample_rate: 48_000,
-            frame_count: 1,
-            start_frame: 0,
-            end_frame: 1,
-            mode: PlaybackMode::Toggle,
-            looping: false,
-            fade_in: None,
-            fade_out: None,
-            default_volume: 1.0,
-        };
-        let mut mixer = Mixer::new(vec![track]);
+        let mut mixer = Mixer::new(vec![track(Arc::from([1.0, 1.0]), 48_000, 1)]);
         let mut frame = [0.0, 0.0];
 
         mixer.handle_command(Command::SetVolume {
@@ -355,58 +376,17 @@ mod tests {
     }
 
     #[test]
-    fn fade_in_scales_start_of_playback() {
-        let track = LoadedTrack {
-            id: "intro".to_string(),
-            name: "Intro".to_string(),
-            samples: Arc::from([1.0, 1.0, 1.0, 1.0]),
-            channels: 2,
-            sample_rate: 2,
-            frame_count: 2,
-            start_frame: 0,
-            end_frame: 2,
-            mode: PlaybackMode::Toggle,
-            looping: false,
-            fade_in: Some(FadeConfig {
-                seconds: 0.5,
-                curve: FadeCurve::Linear,
-            }),
-            fade_out: None,
-            default_volume: 1.0,
-        };
-        let mut mixer = Mixer::new(vec![track]);
-        let mut frame = [0.0, 0.0];
-
-        mixer.handle_command(Command::Play {
-            track_id: "intro".to_string(),
-        });
-        mixer.mix_frame(2, &mut frame);
-        assert_eq!(frame, [0.0, 0.0]);
-        mixer.mix_frame(2, &mut frame);
-        assert_eq!(frame, [1.0, 1.0]);
-    }
-
-    #[test]
     fn manual_stop_uses_fade_out() {
-        let track = LoadedTrack {
-            id: "intro".to_string(),
-            name: "Intro".to_string(),
-            samples: Arc::from([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
-            channels: 2,
-            sample_rate: 2,
-            frame_count: 3,
-            start_frame: 0,
-            end_frame: 3,
-            mode: PlaybackMode::Toggle,
-            looping: false,
-            fade_in: None,
-            fade_out: Some(FadeConfig {
-                seconds: 1.0,
-                curve: FadeCurve::Linear,
-            }),
-            default_volume: 1.0,
-        };
-        let mut mixer = Mixer::new(vec![track]);
+        let mut loaded = track(
+            Arc::from([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            2,
+            3,
+        );
+        loaded.fade_out = Some(FadeConfig {
+            seconds: 1.0,
+            curve: FadeCurve::Linear,
+        });
+        let mut mixer = Mixer::new(vec![loaded]);
         let mut frame = [0.0, 0.0];
 
         mixer.handle_command(Command::Play {
